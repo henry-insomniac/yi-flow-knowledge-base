@@ -1,0 +1,16 @@
+services:
+  knowledge-base:
+    build:
+      context: .
+    environment:
+      ADDR: ":8080"
+      STORAGE_DIR: "/var/lib/yi-flow-knowledge-base"
+      ADMIN_TOKEN: "${ADMIN_TOKEN:?set ADMIN_TOKEN}"
+    ports:
+      - "127.0.0.1:18085:8080"
+    volumes:
+      - knowledge_base_data:/var/lib/yi-flow-knowledge-base
+    restart: unless-stopped
+
+volumes:
+  knowledge_base_data:

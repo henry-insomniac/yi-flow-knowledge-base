@@ -1,0 +1,6 @@
+.env
+.data/
+.tmp-data/
+/server
+/yi-flow-knowledge-base
+coverage.out

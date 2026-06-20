@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "$ROOT_DIR"
+go test ./...
+go build -o /tmp/yi-flow-knowledge-base-verify ./cmd/server
+
+echo "knowledge_base_server_ok"
