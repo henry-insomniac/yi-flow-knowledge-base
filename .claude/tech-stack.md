@@ -6,8 +6,9 @@
 
 ## 技术栈
 
-- 语言：Go `1.24.5`
+- 语言：Go `1.25.0`
 - HTTP：标准库 `net/http`
+- SQLite：`modernc.org/sqlite`，用于服务端只读预览已发布 `knowledge-pack.zip` 内的 `chunks.sqlite`
 - 测试：标准库 `testing` + `httptest`，以公开 HTTP 接口做集成式行为测试
 - 存储：本地文件系统，生产环境通过 Docker volume 持久化
 - 管理界面：内置 `/admin/` 静态 HTML 页面，不拆独立前端项目
@@ -26,7 +27,7 @@
 - Go 代码使用 `gofmt`。
 - 测试通过公开 HTTP 行为验证，不 mock 项目内部模块。
 - Admin 写接口必须通过 `Authorization: Bearer <ADMIN_TOKEN>` 鉴权。
-- 公开接口只提供 manifest/package/版本列表，不暴露管理写操作。
+- 公开接口只提供 manifest/package/版本列表/内容预览，不暴露管理写操作。
 - Knowledge Pack version 发布后不可覆盖；回滚通过切换 latest 完成。
 
 ## 脚本规范
@@ -67,6 +68,7 @@ ADMIN_TOKEN="replace-with-random-token" STORAGE_DIR="$(pwd)/.data" go run ./cmd/
 - `http://127.0.0.1:8080/admin/`
 - `http://127.0.0.1:8080/healthz`
 - `http://127.0.0.1:8080/kb/yi-flow-core/latest/manifest.json`
+- `http://127.0.0.1:8080/kb/yi-flow-core/latest/preview`
 - 生产入口：`https://yi-flow.com/knowledge-base/`
 
 ## 部署

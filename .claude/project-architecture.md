@@ -58,8 +58,10 @@ Knowledge Pack 发布服务核心。当前提供：
 - `POST /admin/api/kb/:kb_id/versions`：上传 `manifest.json` 和 `knowledge-pack.zip`，发布不可变版本并设为 latest。
 - `POST /admin/api/kb/:kb_id/latest`：把 latest 回滚/切换到已存在版本。
 - `GET /kb/:kb_id/latest/manifest.json`：App 端拉取 latest manifest。
+- `GET /kb/:kb_id/latest/preview`：管理页读取 latest 知识包 chunks，展示内容摘要和可复制提问样例。
 - `GET /kb/:kb_id/versions`：列出版本和 latest。
 - `GET /kb/:kb_id/versions/:version/knowledge-pack.zip`：App 端下载指定版本完整包。
+- `GET /kb/:kb_id/versions/:version/preview`：按版本读取知识包 chunks，便于发布后人工核验内容。
 
 存储布局：
 
@@ -78,7 +80,7 @@ Knowledge Pack 发布服务核心。当前提供：
 
 ### `Dockerfile` / `docker-compose.yml`
 
-单服务部署入口。容器内部监听 `:8080`，compose 默认只绑定宿主机 `127.0.0.1:18084`，由 Caddy/Nginx 负责 HTTPS 反代。
+单服务部署入口。容器内部监听 `:8080`，compose 默认只绑定宿主机 `127.0.0.1:18085`，由 Caddy/Nginx 负责 HTTPS 反代。
 
 ### `.agents/skills/`
 
@@ -102,3 +104,4 @@ Knowledge Pack 发布服务核心。当前提供：
 | --- | --- | --- | --- |
 | 2026-06-18 | 初始化 Agent 项目文档 | 建立项目长期上下文和协作基线 | 已创建 `AGENTS.md` 与 `.claude` 文档 |
 | 2026-06-20 | 新增 Knowledge Pack 发布服务 | 支撑 iOS App 远程更新知识包，提供公开 manifest/package 下载和 token 保护的管理接口 | `scripts/verify-knowledge-base-server.sh` 通过 |
+| 2026-06-21 | 新增 Knowledge Pack 内容预览 | 管理页可查看 chunks 内容并复制样例问题到 App 验证知识包加载 | `scripts/verify-knowledge-base-server.sh` 通过 |

@@ -49,10 +49,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleSetLatest(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/kb/") && strings.HasSuffix(r.URL.Path, "/latest/manifest.json"):
 		h.handleLatestManifest(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/kb/") && strings.HasSuffix(r.URL.Path, "/latest/preview"):
+		h.handleLatestPreview(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/kb/") && strings.HasSuffix(r.URL.Path, "/versions"):
 		h.handleListVersions(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/kb/") && strings.Contains(r.URL.Path, "/versions/") && strings.HasSuffix(r.URL.Path, "/knowledge-pack.zip"):
 		h.handleVersionPackage(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/kb/") && strings.Contains(r.URL.Path, "/versions/") && strings.HasSuffix(r.URL.Path, "/preview"):
+		h.handleVersionPreview(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -191,8 +195,16 @@ const adminPageHTML = `<!doctype html>
     input { padding: 10px; border: 1px solid #b9c2b2; border-radius: 6px; background: white; }
     button { border: 0; border-radius: 6px; background: #0f766e; color: white; padding: 10px 14px; cursor: pointer; }
     button.secondary { background: #334155; }
+    button.copy { background: #ecfccb; color: #25330e; border: 1px solid #c7dca4; margin: 4px 6px 4px 0; }
     pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; min-height: 80px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .muted { color: #647066; }
+    .chunk-list { display: grid; gap: 12px; margin-top: 14px; }
+    .chunk-card { border: 1px solid #d9dfd2; border-radius: 8px; padding: 14px; background: #fffffb; }
+    .chunk-card h3 { margin: 0 0 6px; font-size: 18px; }
+    .chunk-meta { color: #647066; font-size: 13px; margin-bottom: 8px; }
+    .chunk-content { line-height: 1.55; margin: 8px 0 10px; }
+    .question-row { display: flex; flex-wrap: wrap; gap: 4px; }
   </style>
 </head>
 <body>
@@ -224,6 +236,19 @@ const adminPageHTML = `<!doctype html>
   </section>
 
   <section>
+    <h2>内容预览</h2>
+    <p class="muted">查看已发布 Knowledge Pack 里的 chunks，并复制样例问题到 App 中验证检索和引用。</p>
+    <div class="grid">
+      <label>Preview version <input id="previewVersion" placeholder="留空表示 latest"></label>
+      <label>Chunk limit <input id="previewLimit" type="number" min="1" max="50" value="12"></label>
+    </div>
+    <button id="preview" class="secondary">查看知识包内容</button>
+    <p id="previewSummary" class="muted"></p>
+    <div id="previewChunks" class="chunk-list"></div>
+    <pre id="previewRaw"></pre>
+  </section>
+
+  <section>
     <h2>回滚 latest</h2>
     <label>Version <input id="rollbackVersion" placeholder="2026.06.20.001"></label>
     <button id="rollback">设为 latest</button>
@@ -239,6 +264,9 @@ const tokenInput = document.querySelector("#token");
 const kbIDInput = document.querySelector("#kbID");
 const output = document.querySelector("#output");
 const versions = document.querySelector("#versions");
+const previewChunks = document.querySelector("#previewChunks");
+const previewRaw = document.querySelector("#previewRaw");
+const previewSummary = document.querySelector("#previewSummary");
 const servicePrefix = location.pathname.includes("/admin") ? location.pathname.split("/admin")[0] : "";
 tokenInput.value = localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
 document.querySelector("#saveToken").onclick = () => {
@@ -266,8 +294,34 @@ document.querySelector("#publish").onclick = async () => {
 };
 document.querySelector("#refresh").onclick = async () => {
   const response = await fetch(servicePrefix + "/kb/" + encodeURIComponent(kbID()) + "/versions");
-  versions.textContent = await response.text();
+  const text = await response.text();
+  versions.textContent = text;
+  try {
+    const decoded = JSON.parse(text);
+    if (decoded.latest) {
+      document.querySelector("#rollbackVersion").value = decoded.latest;
+      document.querySelector("#previewVersion").value = decoded.latest;
+    }
+  } catch (_) {}
   output.textContent = "versions refreshed: " + response.status;
+};
+document.querySelector("#preview").onclick = async () => {
+  const version = document.querySelector("#previewVersion").value.trim();
+  const limit = Math.max(1, Math.min(50, Number(document.querySelector("#previewLimit").value || 12)));
+  const path = version
+    ? "/kb/" + encodeURIComponent(kbID()) + "/versions/" + encodeURIComponent(version) + "/preview"
+    : "/kb/" + encodeURIComponent(kbID()) + "/latest/preview";
+  const response = await fetch(servicePrefix + path + "?limit=" + encodeURIComponent(String(limit)));
+  const text = await response.text();
+  previewRaw.textContent = response.status + "\n" + text;
+  if (!response.ok) {
+    previewSummary.textContent = "内容预览失败";
+    previewChunks.replaceChildren();
+    output.textContent = "preview failed: " + response.status;
+    return;
+  }
+  renderPreview(JSON.parse(text));
+  output.textContent = "preview loaded: " + response.status;
 };
 document.querySelector("#rollback").onclick = async () => {
   const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/latest", {
@@ -277,6 +331,44 @@ document.querySelector("#rollback").onclick = async () => {
   });
   await showResponse(response);
 };
+function renderPreview(preview) {
+  previewSummary.textContent = preview.kb_id + " · " + preview.version + " · " + preview.chunks.length + " chunks";
+  previewChunks.replaceChildren(...preview.chunks.map(renderChunk));
+}
+function renderChunk(chunk) {
+  const card = document.createElement("article");
+  card.className = "chunk-card";
+
+  const title = document.createElement("h3");
+  title.textContent = chunk.title || chunk.chunk_id;
+  card.append(title);
+
+  const meta = document.createElement("div");
+  meta.className = "chunk-meta";
+  meta.textContent = [chunk.chunk_id, chunk.source, chunk.path].filter(Boolean).join(" · ");
+  card.append(meta);
+
+  const content = document.createElement("p");
+  content.className = "chunk-content";
+  content.textContent = chunk.content;
+  card.append(content);
+
+  const questions = document.createElement("div");
+  questions.className = "question-row";
+  for (const question of chunk.suggested_questions || []) {
+    const button = document.createElement("button");
+    button.className = "copy";
+    button.type = "button";
+    button.textContent = question;
+    button.onclick = async () => {
+      await navigator.clipboard.writeText(question);
+      output.textContent = "已复制问题，可到 App 中提问：\n" + question;
+    };
+    questions.append(button);
+  }
+  card.append(questions);
+  return card;
+}
 </script>
 </body>
 </html>`

@@ -9,8 +9,10 @@ Knowledge Pack 发布服务。它负责托管 iOS App 可远程更新的 `manife
 - `https://yi-flow.com/knowledge-base/healthz`
 - `https://yi-flow.com/knowledge-base/admin/`
 - `https://yi-flow.com/knowledge-base/kb/yi-flow-core/latest/manifest.json`
+- `https://yi-flow.com/knowledge-base/kb/yi-flow-core/latest/preview`
 - `https://yi-flow.com/knowledge-base/kb/yi-flow-core/versions`
 - `https://yi-flow.com/knowledge-base/kb/yi-flow-core/versions/<version>/knowledge-pack.zip`
+- `https://yi-flow.com/knowledge-base/kb/yi-flow-core/versions/<version>/preview`
 
 App 侧应配置：
 
@@ -44,6 +46,12 @@ curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/yi-flow-core/lates
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"version":"2026.06.20.001"}'
+```
+
+查看已发布知识包内容预览，用于复制样例问题到 App 验证检索是否加载正确：
+
+```bash
+curl "https://yi-flow.com/knowledge-base/kb/yi-flow-core/latest/preview?limit=12"
 ```
 
 ## Local Development

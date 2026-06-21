@@ -1,7 +1,7 @@
-FROM golang:1.24-alpine AS build
+FROM golang:1.25-alpine AS build
 
 WORKDIR /app
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY . .
 RUN go test ./... && go build -o /out/yi-flow-knowledge-base ./cmd/server
 
