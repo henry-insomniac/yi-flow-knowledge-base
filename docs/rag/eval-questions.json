@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "purpose": "Shared RAG evaluation set for local Knowledge Pack, WeKnora POC, gateway, and iOS real-device smoke.",
+  "questions": [
+    {
+      "id": "yf-runtime-001",
+      "category": "yi-flow-runtime",
+      "question": "知识包更新路径是什么？",
+      "expected_route": "rag",
+      "expected_signals": ["manifest.json", "knowledge-pack.zip", "active_version"]
+    },
+    {
+      "id": "yf-runtime-002",
+      "category": "yi-flow-runtime",
+      "question": "App 如何确认知识包签名和 sha256？",
+      "expected_route": "rag",
+      "expected_signals": ["sha256", "Ed25519", "manifest"]
+    },
+    {
+      "id": "yf-runtime-003",
+      "category": "yi-flow-runtime",
+      "question": "本地 4B 模型和远端 API 模型有什么区别？",
+      "expected_route": "rag",
+      "expected_signals": ["Qwen3 4B", "On-device", "API key"]
+    },
+    {
+      "id": "yf-runtime-004",
+      "category": "yi-flow-runtime",
+      "question": "为什么多模态模型不应该下载安装到本地？",
+      "expected_route": "rag",
+      "expected_signals": ["API", "配置", "本地只内置"]
+    },
+    {
+      "id": "yf-runtime-005",
+      "category": "yi-flow-runtime",
+      "question": "Runtime 控制台应该展示哪些模型状态？",
+      "expected_route": "rag",
+      "expected_signals": ["本地", "远端", "配置状态"]
+    },
+    {
+      "id": "yf-knowledge-001",
+      "category": "knowledge-pack",
+      "question": "如何手动查看知识包里的问题内容？",
+      "expected_route": "rag",
+      "expected_signals": ["preview", "chunks", "样例问题"]
+    },
+    {
+      "id": "yf-knowledge-002",
+      "category": "knowledge-pack",
+      "question": "知识包 latest 如何回滚到指定版本？",
+      "expected_route": "rag",
+      "expected_signals": ["latest", "version", "rollback"]
+    },
+    {
+      "id": "yf-knowledge-003",
+      "category": "knowledge-pack",
+      "question": "知识包 manifest 里面包含哪些文件？",
+      "expected_route": "rag",
+      "expected_signals": ["chunks.sqlite", "vector.index", "prompts.json"]
+    },
+    {
+      "id": "yf-knowledge-004",
+      "category": "knowledge-pack",
+      "question": "chunks.json 应该怎么写？",
+      "expected_route": "rag",
+      "expected_signals": ["chunk_id", "title", "content"]
+    },
+    {
+      "id": "yf-knowledge-005",
+      "category": "knowledge-pack",
+      "question": "萌娘百科摘要知识包为什么不能保存全文？",
+      "expected_route": "rag",
+      "expected_signals": ["摘要", "许可", "不复现完整条目"]
+    },
+    {
+      "id": "acgn-001",
+      "category": "acgn",
+      "question": "初音未来是谁？",
+      "expected_route": "rag",
+      "expected_signals": ["虚拟歌手", "VOCALOID", "Crypton"]
+    },
+    {
+      "id": "acgn-002",
+      "category": "acgn",
+      "question": "东方Project 是什么？",
+      "expected_route": "rag",
+      "expected_signals": ["同人", "弹幕", "ZUN"]
+    },
+    {
+      "id": "acgn-003",
+      "category": "acgn",
+      "question": "博丽灵梦的基础设定是什么？",
+      "expected_route": "rag",
+      "expected_signals": ["东方Project", "巫女", "博丽神社"]
+    },
+    {
+      "id": "acgn-004",
+      "category": "acgn",
+      "question": "雾雨魔理沙的基础设定是什么？",
+      "expected_route": "rag",
+      "expected_signals": ["东方Project", "魔法使"]
+    },
+    {
+      "id": "acgn-005",
+      "category": "acgn",
+      "question": "洛天依是什么角色？",
+      "expected_route": "rag",
+      "expected_signals": ["虚拟歌手", "Vsinger", "VOCALOID"]
+    },
+    {
+      "id": "acgn-006",
+      "category": "acgn",
+      "question": "VOCALOID 是什么？",
+      "expected_route": "rag",
+      "expected_signals": ["歌声合成", "软件", "虚拟歌手"]
+    },
+    {
+      "id": "acgn-007",
+      "category": "acgn",
+      "question": "二次元这个词通常指什么？",
+      "expected_route": "rag",
+      "expected_signals": ["ACG", "动画", "漫画"]
+    },
+    {
+      "id": "acgn-008",
+      "category": "acgn",
+      "question": "萌属性是什么意思？",
+      "expected_route": "rag",
+      "expected_signals": ["角色特征", "萌", "属性"]
+    },
+    {
+      "id": "acgn-009",
+      "category": "acgn",
+      "question": "原神是什么类型的作品？",
+      "expected_route": "rag",
+      "expected_signals": ["游戏", "开放世界", "米哈游"]
+    },
+    {
+      "id": "acgn-010",
+      "category": "acgn",
+      "question": "明日方舟是什么作品？",
+      "expected_route": "rag",
+      "expected_signals": ["游戏", "策略", "鹰角"]
+    },
+    {
+      "id": "intent-001",
+      "category": "intent-routing",
+      "question": "你好",
+      "expected_route": "chat",
+      "expected_signals": ["不应该依赖知识库"]
+    },
+    {
+      "id": "intent-002",
+      "category": "intent-routing",
+      "question": "介绍自己",
+      "expected_route": "agent-profile",
+      "expected_signals": ["yi-flow", "本地 RAG", "API provider"]
+    },
+    {
+      "id": "intent-003",
+      "category": "intent-routing",
+      "question": "生成一张二次元少女图片",
+      "expected_route": "image-generation",
+      "expected_signals": ["生图", "远端 provider"]
+    },
+    {
+      "id": "intent-004",
+      "category": "intent-routing",
+      "question": "帮我把这张图改成二次元风格",
+      "expected_route": "image-editing",
+      "expected_signals": ["图生图", "附件", "远端 provider"]
+    },
+    {
+      "id": "provider-001",
+      "category": "provider",
+      "question": "豆包 Seed 系列模型应该如何配置？",
+      "expected_route": "rag",
+      "expected_signals": ["Volcengine Ark", "API key", "Seed"]
+    },
+    {
+      "id": "provider-002",
+      "category": "provider",
+      "question": "DashScope provider 应该显示什么配置状态？",
+      "expected_route": "rag",
+      "expected_signals": ["API key", "qwen-plus", "External"]
+    },
+    {
+      "id": "provider-003",
+      "category": "provider",
+      "question": "OpenAI Compatible 模型未配置时应该如何提示？",
+      "expected_route": "rag",
+      "expected_signals": ["未配置", "API key", "模型名"]
+    },
+    {
+      "id": "provider-004",
+      "category": "provider",
+      "question": "Seedream 5.0 lite 文生图失败时应该如何分类错误？",
+      "expected_route": "rag",
+      "expected_signals": ["model not found", "invalid response", "missing generated image data"]
+    },
+    {
+      "id": "fallback-001",
+      "category": "fallback",
+      "question": "远程 RAG 失败时 App 应该怎么办？",
+      "expected_route": "rag",
+      "expected_signals": ["回退", "本地知识包", "错误状态"]
+    },
+    {
+      "id": "fallback-002",
+      "category": "fallback",
+      "question": "没有任何知识命中时 App 应该如何回答？",
+      "expected_route": "rag",
+      "expected_signals": ["不编造", "无法确认", "更新知识包"]
+    }
+  ]
+}

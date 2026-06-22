@@ -139,6 +139,30 @@ scripts/verify-knowledge-base-server.sh
 docker build -t yi-flow-knowledge-base:local .
 ```
 
+## WeKnora RAG POC
+
+WeKnora is evaluated as a server-side RAG engine, not as an iOS embedded dependency. The app keeps signed Knowledge Pack as the offline fallback.
+
+- POC plan: `docs/rag/weknora-poc.md`
+- Shared eval set: `docs/rag/eval-questions.json`
+- Smoke script: `scripts/verify-weknora-poc.sh`
+
+Health-only smoke:
+
+```bash
+WEKNORA_BASE_URL=http://localhost:8080 scripts/verify-weknora-poc.sh
+```
+
+Retrieval smoke:
+
+```bash
+WEKNORA_BASE_URL=http://localhost:8080 \
+WEKNORA_API_KEY=sk-xxxx \
+WEKNORA_KB_ID=kb-xxxx \
+WEKNORA_QUERY="知识包更新路径是什么" \
+scripts/verify-weknora-poc.sh
+```
+
 ## Deployment
 
 The server is deployed on the VPS under:
