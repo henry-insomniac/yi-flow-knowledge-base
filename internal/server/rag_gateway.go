@@ -64,8 +64,11 @@ type ragGatewayChunk struct {
 }
 
 type weknoraSearchRequest struct {
-	Query           string `json:"query"`
-	KnowledgeBaseID string `json:"knowledge_base_id"`
+	QueryText             string `json:"query_text"`
+	MatchCount            int    `json:"match_count"`
+	DisableVectorMatch    bool   `json:"disable_vector_match"`
+	DisableKeywordsMatch  bool   `json:"disable_keywords_match"`
+	SkipContextEnrichment bool   `json:"skip_context_enrichment"`
 }
 
 type weknoraSearchResponse struct {
@@ -222,13 +225,16 @@ func (h *Handler) handleRAGQuery(w http.ResponseWriter, r *http.Request) {
 
 func (g *ragGateway) queryWeKnora(parent context.Context, query string, weknoraKBID string, topK int) ([]ragGatewayChunk, error) {
 	requestBody, err := json.Marshal(weknoraSearchRequest{
-		Query:           query,
-		KnowledgeBaseID: weknoraKBID,
+		QueryText:             query,
+		MatchCount:            topK,
+		DisableVectorMatch:    true,
+		DisableKeywordsMatch:  false,
+		SkipContextEnrichment: true,
 	})
 	if err != nil {
 		return nil, err
 	}
-	endpoint := g.weknoraBaseURL.ResolveReference(&url.URL{Path: "/api/v1/knowledge-search"})
+	endpoint := g.weknoraBaseURL.ResolveReference(&url.URL{Path: "/api/v1/knowledge-bases/" + weknoraKBID + "/hybrid-search"})
 	ctx, cancel := context.WithTimeout(parent, g.timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(requestBody))
@@ -256,14 +262,27 @@ func (g *ragGateway) queryWeKnora(parent context.Context, query string, weknoraK
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, fmt.Errorf("%w: %d", errWeKnoraUpstreamStatus, response.StatusCode)
 	}
-	var decoded weknoraSearchResponse
-	if err := json.Unmarshal(body, &decoded); err != nil {
+	decoded, err := decodeWeKnoraSearchResponse(body)
+	if err != nil {
 		return nil, fmt.Errorf("%w: decode", errWeKnoraInvalidResponse)
 	}
 	if decoded.Success != nil && !*decoded.Success {
 		return nil, errWeKnoraInvalidResponse
 	}
 	return normalizeWeKnoraChunks(decoded.Data, topK), nil
+}
+
+func decodeWeKnoraSearchResponse(body []byte) (weknoraSearchResponse, error) {
+	var decoded weknoraSearchResponse
+	if err := json.Unmarshal(body, &decoded); err == nil && decoded.Data != nil {
+		return decoded, nil
+	}
+	var data []weknoraSearchResult
+	if err := json.Unmarshal(body, &data); err != nil {
+		return weknoraSearchResponse{}, err
+	}
+	decoded.Data = data
+	return decoded, nil
 }
 
 func (g *ragGateway) auditQuery(kbID string, provider string, status string, query string, latencyMS int64, chunks int) {

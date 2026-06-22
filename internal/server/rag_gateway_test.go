@@ -15,12 +15,15 @@ import (
 func TestRAGGatewayQueriesWeKnoraAndNormalizesChunks(t *testing.T) {
 	var upstreamHeader string
 	var upstreamRequest struct {
-		Query           string `json:"query"`
-		KnowledgeBaseID string `json:"knowledge_base_id"`
+		QueryText             string `json:"query_text"`
+		MatchCount            int    `json:"match_count"`
+		DisableVectorMatch    bool   `json:"disable_vector_match"`
+		DisableKeywordsMatch  bool   `json:"disable_keywords_match"`
+		SkipContextEnrichment bool   `json:"skip_context_enrichment"`
 	}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHeader = r.Header.Get("X-API-Key")
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/knowledge-search" {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/knowledge-bases/kb-upstream/hybrid-search" {
 			t.Fatalf("unexpected upstream request %s %s", r.Method, r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&upstreamRequest); err != nil {
@@ -66,7 +69,7 @@ func TestRAGGatewayQueriesWeKnoraAndNormalizesChunks(t *testing.T) {
 	if upstreamHeader != "sk-weknora" {
 		t.Fatalf("upstream api key header = %q", upstreamHeader)
 	}
-	if upstreamRequest.Query != "知识包更新路径" || upstreamRequest.KnowledgeBaseID != "kb-upstream" {
+	if upstreamRequest.QueryText != "知识包更新路径" || upstreamRequest.MatchCount != 1 || !upstreamRequest.DisableVectorMatch || upstreamRequest.DisableKeywordsMatch || !upstreamRequest.SkipContextEnrichment {
 		t.Fatalf("upstream request = %+v", upstreamRequest)
 	}
 
