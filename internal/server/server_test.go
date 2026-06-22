@@ -324,6 +324,66 @@ func TestClientsCanPreviewLatestKnowledgePackContent(t *testing.T) {
 	}
 }
 
+func TestAdminRAGCompareShowsLocalResultsWhenRemoteIsDisabled(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	packageBytes := knowledgePackZip(t, []testChunk{
+		{
+			ChunkID: "local-rag-001",
+			Title:   "知识包更新路径",
+			Path:    "runtime/update.md",
+			Source:  "yi-flow-core",
+			Content: "知识包更新路径通过 manifest.json 和 knowledge-pack.zip 发布，App 校验签名后写入 active_version。",
+		},
+	})
+	publishVersion(t, handler, "yi-flow-core", "2026.06.22.002", validManifest("2026.06.22.002"), packageBytes)
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/rag/compare", bytes.NewBufferString(`{"query":"知识包更新路径是什么？","top_k":3}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("rag compare status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var decoded struct {
+		Local struct {
+			Status  string `json:"status"`
+			Version string `json:"version"`
+			Chunks  []struct {
+				ChunkID string `json:"chunk_id"`
+				Title   string `json:"title"`
+				Content string `json:"content"`
+			} `json:"chunks"`
+		} `json:"local"`
+		Remote struct {
+			Status string `json:"status"`
+			Error  *struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"remote"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode rag compare: %v", err)
+	}
+	if decoded.Local.Status != "ok" || decoded.Local.Version != "2026.06.22.002" || len(decoded.Local.Chunks) != 1 {
+		t.Fatalf("local compare = %+v", decoded.Local)
+	}
+	if decoded.Local.Chunks[0].ChunkID != "local-rag-001" || !strings.Contains(decoded.Local.Chunks[0].Content, "active_version") {
+		t.Fatalf("local chunk = %+v", decoded.Local.Chunks[0])
+	}
+	if decoded.Remote.Status != "disabled" || decoded.Remote.Error == nil || decoded.Remote.Error.Code != "rag_gateway_disabled" {
+		t.Fatalf("remote disabled state = %+v", decoded.Remote)
+	}
+}
+
 func TestAdminCanRollbackLatestToExistingVersion(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -440,6 +500,12 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("CC BY-NC-SA 3.0 CN")) {
 		t.Fatalf("admin page missing Moegirl license notice")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("RAG 对比")) {
+		t.Fatalf("admin page missing RAG compare")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("/rag/compare")) {
+		t.Fatalf("admin page missing RAG compare api usage")
 	}
 }
 

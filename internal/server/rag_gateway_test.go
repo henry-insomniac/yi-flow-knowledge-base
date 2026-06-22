@@ -168,6 +168,44 @@ func TestRAGGatewayReturnsStableEmptyResult(t *testing.T) {
 	}
 }
 
+func TestAdminRAGCompareShowsRemoteWeKnoraResults(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(t, w, http.StatusOK, map[string]any{
+			"success": true,
+			"data": []map[string]any{
+				{
+					"id":                 "remote-001",
+					"content":            "WeKnora 命中的远程知识片段。",
+					"knowledge_id":       "doc-remote",
+					"knowledge_title":    "远程 RAG",
+					"score":              0.88,
+					"knowledge_filename": "remote/rag.md",
+					"knowledge_source":   "manual",
+				},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	handler := newRAGGatewayTestHandler(t, upstream.URL, "yi-flow-core=kb-upstream", 5*time.Second)
+	request := httptest.NewRequest(http.MethodPost, "/admin/api/kb/yi-flow-core/rag/compare", bytes.NewBufferString(`{"query":"远程 RAG","top_k":2}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("rag compare status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"status":"no_pack"`) {
+		t.Fatalf("local no-pack state missing: %s", response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"provider":"weknora"`) ||
+		!strings.Contains(response.Body.String(), `"knowledge_version":"remote:weknora:kb-upstream"`) ||
+		!strings.Contains(response.Body.String(), `"chunk_id":"weknora:remote-001"`) {
+		t.Fatalf("remote WeKnora result missing: %s", response.Body.String())
+	}
+}
+
 func TestRAGGatewayClassifiesUpstreamStatus(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(t, w, http.StatusInternalServerError, map[string]any{

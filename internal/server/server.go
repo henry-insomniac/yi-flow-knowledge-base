@@ -68,6 +68,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleRAGQuery(w, r)
 	case r.Method == http.MethodGet && (r.URL.Path == "/admin" || r.URL.Path == "/admin/"):
 		h.handleAdminPage(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/rag/compare"):
+		h.handleAdminRAGCompare(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/moegirl/build-publish"):
 		h.handleBuildAndPublishMoegirlSummary(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/build-publish"):
@@ -203,6 +205,9 @@ const adminPageHTML = `<!doctype html>
     .chunk-meta { color: #647066; font-size: 13px; margin-bottom: 8px; }
     .chunk-content { line-height: 1.55; margin: 8px 0 10px; }
     .question-row { display: flex; flex-wrap: wrap; gap: 4px; }
+    .compare-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 14px; }
+    .compare-column { border: 1px solid #d9dfd2; border-radius: 8px; padding: 12px; background: #fffffb; }
+    .compare-status { font-weight: 700; margin: 0 0 10px; }
   </style>
 </head>
 <body>
@@ -275,6 +280,30 @@ const adminPageHTML = `<!doctype html>
   </section>
 
   <section>
+    <h2>RAG 对比</h2>
+    <p class="muted">输入问题后同时查看本地 Knowledge Pack FTS5 和远程 WeKnora 网关结果。远程未配置时只显示状态，不阻断本地检索。</p>
+    <div class="grid">
+      <label>Query <input id="ragQuery" placeholder="知识包更新路径是什么？"></label>
+      <label>TopK <input id="ragTopK" type="number" min="1" max="12" value="5"></label>
+    </div>
+    <button id="runRagCompare" class="secondary">运行 RAG 对比</button>
+    <button id="copyRagQuestion" class="copy">复制问题到 App</button>
+    <div class="compare-grid">
+      <div class="compare-column">
+        <h3>Local FTS5</h3>
+        <p id="localRagStatus" class="compare-status muted">No run</p>
+        <div id="localRagChunks" class="chunk-list"></div>
+      </div>
+      <div class="compare-column">
+        <h3>Remote WeKnora</h3>
+        <p id="remoteRagStatus" class="compare-status muted">No run</p>
+        <div id="remoteRagChunks" class="chunk-list"></div>
+      </div>
+    </div>
+    <pre id="ragCompareRaw"></pre>
+  </section>
+
+  <section>
     <h2>回滚 latest</h2>
     <label>Version <input id="rollbackVersion" placeholder="2026.06.20.001"></label>
     <button id="rollback">设为 latest</button>
@@ -293,6 +322,11 @@ const versions = document.querySelector("#versions");
 const previewChunks = document.querySelector("#previewChunks");
 const previewRaw = document.querySelector("#previewRaw");
 const previewSummary = document.querySelector("#previewSummary");
+const ragCompareRaw = document.querySelector("#ragCompareRaw");
+const localRagStatus = document.querySelector("#localRagStatus");
+const remoteRagStatus = document.querySelector("#remoteRagStatus");
+const localRagChunks = document.querySelector("#localRagChunks");
+const remoteRagChunks = document.querySelector("#remoteRagChunks");
 const servicePrefix = location.pathname.includes("/admin") ? location.pathname.split("/admin")[0] : "";
 let lastPreview = null;
 tokenInput.value = localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
@@ -494,6 +528,41 @@ document.querySelector("#preview").onclick = async () => {
   renderPreview(lastPreview);
   output.textContent = "preview loaded: " + response.status;
 };
+document.querySelector("#runRagCompare").onclick = async () => {
+  const query = document.querySelector("#ragQuery").value.trim();
+  const topK = Math.max(1, Math.min(12, Number(document.querySelector("#ragTopK").value || 5)));
+  if (!query) {
+    output.textContent = "请输入 RAG 对比问题。";
+    return;
+  }
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/rag/compare", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+    body: JSON.stringify({ query, top_k: topK })
+  });
+  const text = await response.text();
+  ragCompareRaw.textContent = response.status + "\n" + text;
+  if (!response.ok) {
+    localRagStatus.textContent = "failed";
+    remoteRagStatus.textContent = "failed";
+    localRagChunks.replaceChildren();
+    remoteRagChunks.replaceChildren();
+    output.textContent = "RAG compare failed: " + response.status;
+    return;
+  }
+  const decoded = JSON.parse(text);
+  renderRagCompare(decoded);
+  output.textContent = "RAG compare loaded: " + response.status;
+};
+document.querySelector("#copyRagQuestion").onclick = async () => {
+  const query = document.querySelector("#ragQuery").value.trim();
+  if (!query) {
+    output.textContent = "没有可复制的问题。";
+    return;
+  }
+  await navigator.clipboard.writeText(query);
+  output.textContent = "已复制问题，可到 App 中提问：\n" + query;
+};
 document.querySelector("#rollback").onclick = async () => {
   const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/latest", {
     method: "POST",
@@ -539,6 +608,26 @@ function renderChunk(chunk) {
   }
   card.append(questions);
   return card;
+}
+function renderRagCompare(compare) {
+  const local = compare.local || {};
+  const remote = compare.remote || {};
+  localRagStatus.textContent = [local.status, local.version, (local.chunks || []).length + " chunks"].filter(Boolean).join(" · ");
+  if (local.error) localRagStatus.textContent += " · " + local.error.code;
+  remoteRagStatus.textContent = [remote.status, remote.provider, remote.knowledge_version, remote.latency_ms ? remote.latency_ms + "ms" : "", (remote.chunks || []).length + " chunks"].filter(Boolean).join(" · ");
+  if (remote.error) remoteRagStatus.textContent += " · " + remote.error.code;
+  localRagChunks.replaceChildren(...(local.chunks || []).map(renderChunk));
+  remoteRagChunks.replaceChildren(...(remote.chunks || []).map(renderRemoteChunk));
+}
+function renderRemoteChunk(chunk) {
+  return renderChunk({
+    chunk_id: chunk.chunk_id,
+    title: chunk.title,
+    path: chunk.path,
+    source: [chunk.source, chunk.score != null ? "score=" + chunk.score : ""].filter(Boolean).join(" · "),
+    content: chunk.content,
+    suggested_questions: []
+  });
 }
 </script>
 </body>
