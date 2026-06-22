@@ -144,6 +144,7 @@ docker build -t yi-flow-knowledge-base:local .
 WeKnora is evaluated as a server-side RAG engine, not as an iOS embedded dependency. The app keeps signed Knowledge Pack as the offline fallback.
 
 - POC plan: `docs/rag/weknora-poc.md`
+- Reviewed export: `docs/rag/weknora-export.md`
 - Shared eval set: `docs/rag/eval-questions.json`
 - Smoke script: `scripts/verify-weknora-poc.sh`
 
@@ -170,6 +171,31 @@ RAG_GATEWAY_BASE_URL=http://127.0.0.1:18085 \
 RAG_GATEWAY_TOKEN=replace-with-app-facing-token \
 RAG_GATEWAY_KB_ID=yi-flow-core \
 scripts/verify-weknora-gateway.sh
+```
+
+Reviewed WeKnora chunk export:
+
+```bash
+curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/yi-flow-core/weknora/export-publish" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "2026.06.22.weknora",
+    "source": "Tencent WeKnora",
+    "license": "reviewed internal knowledge",
+    "source_policy": "reviewed chunks only; preserve source URL and license; no unreviewed full-article mirror",
+    "chunks": [
+      {
+        "id": "chunk-remote-001",
+        "content": "Reviewed summary content.",
+        "knowledge_title": "Source title",
+        "knowledge_filename": "source/path.md",
+        "knowledge_source": "manual-review",
+        "metadata": {"url": "https://example.com/source"},
+        "reviewed": true
+      }
+    ]
+  }'
 ```
 
 ## Deployment

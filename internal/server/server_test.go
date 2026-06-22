@@ -384,6 +384,141 @@ func TestAdminRAGCompareShowsLocalResultsWhenRemoteIsDisabled(t *testing.T) {
 	}
 }
 
+func TestAdminCanExportReviewedWeKnoraChunksAndPublishKnowledgePack(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	requestBody := bytes.NewBufferString(`{
+	  "version": "2026.06.22.weknora",
+	  "source": "Tencent WeKnora",
+	  "license": "CC BY-NC-SA 3.0 CN",
+	  "source_policy": "reviewed summary chunks only; no full article mirror",
+	  "chunks": [
+	    {
+	      "id": "chunk-remote-001",
+	      "content": "初音未来是由 Crypton Future Media 企划的虚拟歌手形象。本导出只保留审核后的摘要。",
+	      "knowledge_id": "doc-miku",
+	      "knowledge_title": "初音未来",
+	      "knowledge_filename": "moegirl/summary/初音未来",
+	      "knowledge_source": "Moegirl reviewed export",
+	      "score": 0.93,
+	      "metadata": {"url": "https://zh.moegirl.org.cn/初音未来"},
+	      "reviewed": true
+	    }
+	  ],
+	  "prompts": [
+	    {"id": "miku-check", "title": "验证初音未来", "question": "初音未来是谁？"}
+	  ]
+	}`)
+	request := httptest.NewRequest("POST", "/admin/api/kb/weknora-smoke/weknora/export-publish", requestBody)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("weknora export status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var publishResult struct {
+		KBID          string `json:"kb_id"`
+		Version       string `json:"version"`
+		Latest        bool   `json:"latest"`
+		ChunkCount    int    `json:"chunk_count"`
+		CitationCount int    `json:"citation_count"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &publishResult); err != nil {
+		t.Fatalf("decode publish result: %v", err)
+	}
+	if publishResult.KBID != "weknora-smoke" || publishResult.Version != "2026.06.22.weknora" || !publishResult.Latest || publishResult.ChunkCount != 1 || publishResult.CitationCount != 1 {
+		t.Fatalf("publish result = %+v", publishResult)
+	}
+
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, httptest.NewRequest("GET", "/kb/weknora-smoke/latest/preview?limit=3", nil))
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+	previewBody := previewResponse.Body.String()
+	for _, expected := range []string{"初音未来", "https://zh.moegirl.org.cn/初音未来", "reviewed summary chunks only"} {
+		if !strings.Contains(previewBody, expected) {
+			t.Fatalf("preview missing %q: %s", expected, previewBody)
+		}
+	}
+
+	manifestResponse := httptest.NewRecorder()
+	handler.ServeHTTP(manifestResponse, httptest.NewRequest("GET", "/kb/weknora-smoke/latest/manifest.json", nil))
+	if manifestResponse.Code != http.StatusOK {
+		t.Fatalf("manifest status=%d body=%s", manifestResponse.Code, manifestResponse.Body.String())
+	}
+	var manifest struct {
+		ContentHash string `json:"content_hash"`
+		Signature   string `json:"signature"`
+	}
+	if err := json.Unmarshal(manifestResponse.Body.Bytes(), &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+
+	packageResponse := httptest.NewRecorder()
+	handler.ServeHTTP(packageResponse, httptest.NewRequest("GET", "/kb/weknora-smoke/versions/2026.06.22.weknora/knowledge-pack.zip", nil))
+	if packageResponse.Code != http.StatusOK {
+		t.Fatalf("package status=%d body=%s", packageResponse.Code, packageResponse.Body.String())
+	}
+	digest := sha256.Sum256(packageResponse.Body.Bytes())
+	if manifest.ContentHash != "sha256:"+hex.EncodeToString(digest[:]) {
+		t.Fatalf("content_hash=%s digest=%x", manifest.ContentHash, digest)
+	}
+	signature := strings.TrimPrefix(manifest.Signature, "ed25519:")
+	if !ed25519.Verify(publicKey, digest[:], mustBase64(t, signature)) {
+		t.Fatalf("manifest signature does not verify")
+	}
+	packageBody := packageResponse.Body.String()
+	if !strings.Contains(packageBody, "chunk-remote-001") || !strings.Contains(packageBody, "CC BY-NC-SA 3.0 CN") {
+		t.Fatalf("package missing citation metadata")
+	}
+}
+
+func TestAdminWeKnoraExportRejectsUnreviewedChunks(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/weknora-smoke/weknora/export-publish", bytes.NewBufferString(`{
+	  "version": "2026.06.22.bad",
+	  "chunks": [{"id":"draft-001","content":"未经审核的片段","knowledge_title":"草稿","reviewed":false}]
+	}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unreviewed export status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "reviewed must be true") {
+		t.Fatalf("unreviewed export should explain review gate: %s", response.Body.String())
+	}
+}
+
 func TestAdminCanRollbackLatestToExistingVersion(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -506,6 +641,12 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("/rag/compare")) {
 		t.Fatalf("admin page missing RAG compare api usage")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("WeKnora 导出发布")) {
+		t.Fatalf("admin page missing WeKnora export publisher")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("/weknora/export-publish")) {
+		t.Fatalf("admin page missing WeKnora export publish api usage")
 	}
 }
 

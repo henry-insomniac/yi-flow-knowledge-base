@@ -70,6 +70,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAdminPage(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/rag/compare"):
 		h.handleAdminRAGCompare(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/weknora/export-publish"):
+		h.handleWeKnoraExportPublish(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/moegirl/build-publish"):
 		h.handleBuildAndPublishMoegirlSummary(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/build-publish"):
@@ -252,6 +254,14 @@ const adminPageHTML = `<!doctype html>
   </section>
 
   <section>
+    <h2>WeKnora 导出发布</h2>
+    <p class="muted">把 WeKnora 中已人工审核的 chunk 转成签名 Knowledge Pack。每个 chunk 必须包含 reviewed:true；第三方内容必须保留来源 URL、许可和摘要型策略。</p>
+    <button id="fillWeKnoraExportTemplate" class="secondary">填入 WeKnora 模板</button>
+    <label>WeKnora export JSON <textarea id="weknoraExportJSON" spellcheck="false"></textarea></label>
+    <button id="publishWeKnoraExport">导出并发布 latest</button>
+  </section>
+
+  <section>
     <h2>手动上传版本</h2>
     <p class="muted">保留旧路径：仅当你已经离线生成 manifest.json 和 knowledge-pack.zip 时使用。</p>
     <label>Version <input id="version" placeholder="2026.06.20.001"></label>
@@ -354,7 +364,30 @@ const defaultPrompts = [
   }
 ];
 const defaultCitations = { citations: [] };
+const defaultWeKnoraExport = {
+  version: todayVersion(),
+  source: "Tencent WeKnora",
+  license: "reviewed internal knowledge",
+  source_policy: "reviewed chunks only; preserve source URL and license; no unreviewed full-article mirror",
+  chunks: [
+    {
+      id: "chunk-remote-001",
+      content: "这里放已审核的 WeKnora chunk 摘要内容。",
+      knowledge_id: "doc-001",
+      knowledge_title: "WeKnora 导出示例",
+      knowledge_filename: "weknora/export/example.md",
+      knowledge_source: "manual-review",
+      score: 0.9,
+      metadata: { url: "https://example.com/source" },
+      reviewed: true
+    }
+  ],
+  prompts: [
+    { id: "weknora-export-check", title: "验证 WeKnora 导出", question: "请说明 WeKnora 导出示例" }
+  ]
+};
 fillBuilderTemplate(false);
+fillWeKnoraExportTemplate(false);
 document.querySelector("#saveToken").onclick = () => {
   localStorage.setItem("yiFlowKnowledgeAdminToken", tokenInput.value);
   output.textContent = "token saved locally";
@@ -405,6 +438,7 @@ async function showResponse(response) {
   return text;
 }
 document.querySelector("#fillBuilderTemplate").onclick = () => fillBuilderTemplate(true);
+document.querySelector("#fillWeKnoraExportTemplate").onclick = () => fillWeKnoraExportTemplate(true);
 document.querySelector("#nextBuilderVersion").onclick = () => {
   document.querySelector("#builderVersion").value = todayVersion();
 };
@@ -428,6 +462,12 @@ document.querySelector("#importPreviewToBuilder").onclick = () => {
   })));
   output.textContent = "已从当前预览导入构建器，请修改后发布新版本。";
 };
+function fillWeKnoraExportTemplate(force) {
+  if (force || !document.querySelector("#weknoraExportJSON").value.trim()) {
+    const template = { ...defaultWeKnoraExport, version: todayVersion() };
+    document.querySelector("#weknoraExportJSON").value = pretty(template);
+  }
+}
 document.querySelector("#buildPublish").onclick = async () => {
   try {
     const chunksValue = parseJSONField("#builderChunks", []);
@@ -455,6 +495,25 @@ document.querySelector("#buildPublish").onclick = async () => {
     }
   } catch (error) {
     output.textContent = "构建发布失败：\n" + String(error);
+  }
+};
+document.querySelector("#publishWeKnoraExport").onclick = async () => {
+  try {
+    const body = parseJSONField("#weknoraExportJSON", defaultWeKnoraExport);
+    const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/weknora/export-publish", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const text = await showResponse(response);
+    if (response.ok) {
+      const decoded = JSON.parse(text);
+      document.querySelector("#previewVersion").value = decoded.version;
+      document.querySelector("#rollbackVersion").value = decoded.version;
+      fillWeKnoraExportTemplate(true);
+    }
+  } catch (error) {
+    output.textContent = "WeKnora 导出发布失败：\n" + String(error);
   }
 };
 document.querySelector("#buildMoegirl").onclick = async () => {
