@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"yi-flow/knowledge-base/internal/server"
@@ -17,10 +20,15 @@ func main() {
 	if adminToken == "" && os.Getenv("ALLOW_EMPTY_ADMIN_TOKEN") != "1" {
 		log.Fatal("ADMIN_TOKEN is required; set ALLOW_EMPTY_ADMIN_TOKEN=1 only for local development")
 	}
+	signingSeed, err := knowledgePackSigningSeedFromEnv()
+	if err != nil {
+		log.Fatalf("load knowledge pack signing key: %v", err)
+	}
 
 	handler, err := server.NewHandler(server.Options{
-		StorageDir: storageDir,
-		AdminToken: adminToken,
+		StorageDir:               storageDir,
+		AdminToken:               adminToken,
+		KnowledgePackSigningSeed: signingSeed,
 	})
 	if err != nil {
 		log.Fatalf("create handler: %v", err)
@@ -44,4 +52,24 @@ func getenv(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func knowledgePackSigningSeedFromEnv() ([]byte, error) {
+	encoded := strings.TrimSpace(os.Getenv("KNOWLEDGE_PACK_SIGNING_KEY_BASE64"))
+	if encoded == "" {
+		keyFile := strings.TrimSpace(os.Getenv("KNOWLEDGE_PACK_SIGNING_KEY_FILE"))
+		if keyFile == "" {
+			return nil, nil
+		}
+		data, err := os.ReadFile(keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("read KNOWLEDGE_PACK_SIGNING_KEY_FILE: %w", err)
+		}
+		encoded = strings.TrimSpace(string(data))
+	}
+	key, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode signing key base64: %w", err)
+	}
+	return key, nil
 }

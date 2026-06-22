@@ -3,7 +3,12 @@ package server_test
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -18,6 +23,124 @@ import (
 
 	"yi-flow/knowledge-base/internal/server"
 )
+
+func TestAdminCanBuildAndPublishKnowledgePackFromPagePayload(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	requestBody := bytes.NewBufferString(`{
+	  "version": "2026.06.22.001",
+	  "chunks": [
+	    {
+	      "chunk_id": "anime-builder-001",
+	      "title": "二次元角色人设要素",
+	      "path": "anime/character/design",
+	      "source": "yi-flow-anime",
+	      "content": "二次元角色人设通常包含姓名、身份、外观关键词、服装轮廓、标志物、性格反差、目标和弱点。"
+	    }
+	  ],
+	  "prompts": [
+	    {
+	      "id": "anime-character-check",
+	      "title": "验证二次元人设",
+	      "question": "二次元角色人设要素有哪些？"
+	    }
+	  ]
+	}`)
+	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/build-publish", requestBody)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("build publish status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var publishResult struct {
+		KBID       string `json:"kb_id"`
+		Version    string `json:"version"`
+		Latest     bool   `json:"latest"`
+		ChunkCount int    `json:"chunk_count"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &publishResult); err != nil {
+		t.Fatalf("decode publish result: %v", err)
+	}
+	if publishResult.KBID != "yi-flow-core" || publishResult.Version != "2026.06.22.001" || !publishResult.Latest || publishResult.ChunkCount != 1 {
+		t.Fatalf("publish result = %+v", publishResult)
+	}
+
+	manifestResponse := httptest.NewRecorder()
+	handler.ServeHTTP(manifestResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/latest/manifest.json", nil))
+	if manifestResponse.Code != http.StatusOK {
+		t.Fatalf("latest manifest status=%d body=%s", manifestResponse.Code, manifestResponse.Body.String())
+	}
+
+	var manifest struct {
+		KBID        string `json:"kb_id"`
+		Version     string `json:"version"`
+		ContentHash string `json:"content_hash"`
+		Signature   string `json:"signature"`
+		Files       struct {
+			Chunks []struct {
+				Path string `json:"path"`
+			} `json:"chunks"`
+			FTS []struct {
+				Path string `json:"path"`
+			} `json:"fts"`
+			Vector []struct {
+				Path string `json:"path"`
+			} `json:"vector"`
+			Prompts []struct {
+				Path string `json:"path"`
+			} `json:"prompts"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(manifestResponse.Body.Bytes(), &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	if manifest.KBID != "yi-flow-core" || manifest.Version != "2026.06.22.001" {
+		t.Fatalf("manifest header = %+v", manifest)
+	}
+	if manifest.Files.Chunks[0].Path != "chunks.sqlite" || manifest.Files.FTS[0].Path != "chunks.sqlite" || manifest.Files.Vector[0].Path != "vector.index" || manifest.Files.Prompts[0].Path != "prompts.json" {
+		t.Fatalf("manifest files = %+v", manifest.Files)
+	}
+
+	packageResponse := httptest.NewRecorder()
+	handler.ServeHTTP(packageResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/versions/2026.06.22.001/knowledge-pack.zip", nil))
+	if packageResponse.Code != http.StatusOK {
+		t.Fatalf("package status=%d body=%s", packageResponse.Code, packageResponse.Body.String())
+	}
+	digest := sha256.Sum256(packageResponse.Body.Bytes())
+	if manifest.ContentHash != "sha256:"+hex.EncodeToString(digest[:]) {
+		t.Fatalf("content_hash=%s digest=%x", manifest.ContentHash, digest)
+	}
+	signature := strings.TrimPrefix(manifest.Signature, "ed25519:")
+	signatureBytes := mustBase64(t, signature)
+	if !ed25519.Verify(publicKey, digest[:], signatureBytes) {
+		t.Fatalf("manifest signature does not verify")
+	}
+
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/latest/preview?limit=3", nil))
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+	if !bytes.Contains(previewResponse.Body.Bytes(), []byte("二次元角色人设要素")) {
+		t.Fatalf("preview missing generated chunk: %s", previewResponse.Body.String())
+	}
+}
 
 func TestAdminCanPublishVersionAndClientsFetchLatestManifestAndPackage(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
@@ -267,6 +390,14 @@ func TestAdminWriteEndpointsRequireBearerToken(t *testing.T) {
 	if rollbackResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated rollback status=%d body=%s", rollbackResponse.Code, rollbackResponse.Body.String())
 	}
+
+	buildPublish := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/build-publish", bytes.NewBufferString(`{"version":"2026.06.20.001","chunks":[]}`))
+	buildPublish.Header.Set("Content-Type", "application/json")
+	buildPublishResponse := httptest.NewRecorder()
+	handler.ServeHTTP(buildPublishResponse, buildPublish)
+	if buildPublishResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated build publish status=%d body=%s", buildPublishResponse.Code, buildPublishResponse.Body.String())
+	}
 }
 
 func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
@@ -294,6 +425,12 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("/preview")) {
 		t.Fatalf("admin page missing preview api usage")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("知识包构建器")) {
+		t.Fatalf("admin page missing knowledge pack builder")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("/build-publish")) {
+		t.Fatalf("admin page missing build publish api usage")
 	}
 }
 
@@ -476,6 +613,16 @@ func mustReadFile(t *testing.T, path string) []byte {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read file %s: %v", path, err)
+	}
+	return data
+}
+
+func mustBase64(t *testing.T, value string) []byte {
+	t.Helper()
+
+	data, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		t.Fatalf("decode base64: %v", err)
 	}
 	return data
 }

@@ -29,6 +29,43 @@ packageURL  = https://yi-flow.com/knowledge-base/kb/yi-flow-core/versions/<versi
 Authorization: Bearer <ADMIN_TOKEN>
 ```
 
+管理页内置“知识包构建器”，用于直接提交 chunks/prompts/citations JSON，由服务端生成 `chunks.sqlite`、`vector.index`、`knowledge-pack.zip`、`manifest.json`，签名后发布为 latest。
+
+服务端需要配置签名私钥，二选一：
+
+```bash
+KNOWLEDGE_PACK_SIGNING_KEY_BASE64=<base64-encoded-ed25519-seed-or-private-key>
+KNOWLEDGE_PACK_SIGNING_KEY_FILE=/var/lib/yi-flow-knowledge-base/signing/knowledge-pack-ed25519.key
+```
+
+构建并发布新版本：
+
+```bash
+curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/yi-flow-core/build-publish" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "2026.06.22.001",
+    "chunks": [
+      {
+        "chunk_id": "topic-001",
+        "title": "知识点标题",
+        "path": "topic/category/name",
+        "source": "yi-flow-core",
+        "content": "知识内容正文，必须包含 App 中要提问验证的关键词。"
+      }
+    ],
+    "prompts": [
+      {
+        "id": "topic-check-001",
+        "title": "验证知识点",
+        "question": "请说明知识点标题"
+      }
+    ],
+    "citations": {"citations":[]}
+  }'
+```
+
 发布新版本并设为 latest：
 
 ```bash

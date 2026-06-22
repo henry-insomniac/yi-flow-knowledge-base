@@ -14,13 +14,15 @@ import (
 )
 
 type Options struct {
-	StorageDir string
-	AdminToken string
+	StorageDir               string
+	AdminToken               string
+	KnowledgePackSigningSeed []byte
 }
 
 type Handler struct {
-	storageDir string
-	adminToken string
+	storageDir               string
+	adminToken               string
+	knowledgePackSigningSeed []byte
 }
 
 func NewHandler(options Options) (http.Handler, error) {
@@ -30,9 +32,14 @@ func NewHandler(options Options) (http.Handler, error) {
 	if err := os.MkdirAll(options.StorageDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create storage dir: %w", err)
 	}
+	signingSeed, err := normalizedSigningSeed(options.KnowledgePackSigningSeed)
+	if err != nil {
+		return nil, err
+	}
 	return &Handler{
-		storageDir: options.StorageDir,
-		adminToken: options.AdminToken,
+		storageDir:               options.StorageDir,
+		adminToken:               options.AdminToken,
+		knowledgePackSigningSeed: signingSeed,
 	}, nil
 }
 
@@ -43,6 +50,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "ok\n")
 	case r.Method == http.MethodGet && (r.URL.Path == "/admin" || r.URL.Path == "/admin/"):
 		h.handleAdminPage(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/build-publish"):
+		h.handleBuildAndPublishVersion(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/versions"):
 		h.handlePublishVersion(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/latest"):
@@ -119,15 +128,6 @@ func (h *Handler) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	versionDir := h.versionDir(kbID, version)
-	if _, err := os.Stat(versionDir); err == nil {
-		http.Error(w, "version already exists", http.StatusConflict)
-		return
-	} else if !errors.Is(err, os.ErrNotExist) {
-		http.Error(w, "version lookup failed", http.StatusInternalServerError)
-		return
-	}
-
 	packageFile, _, err := r.FormFile("package")
 	if err != nil {
 		http.Error(w, "package file is required", http.StatusBadRequest)
@@ -135,39 +135,8 @@ func (h *Handler) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	defer packageFile.Close()
 
-	installingDir := filepath.Join(h.kbDir(kbID), ".installing-"+version)
-	_ = os.RemoveAll(installingDir)
-	if err := os.MkdirAll(installingDir, 0o755); err != nil {
-		http.Error(w, "create version directory failed", http.StatusInternalServerError)
-		return
-	}
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.RemoveAll(installingDir)
-		}
-	}()
-
-	if err := os.WriteFile(filepath.Join(installingDir, "manifest.json"), manifest, 0o644); err != nil {
-		http.Error(w, "write manifest failed", http.StatusInternalServerError)
-		return
-	}
-	if err := writeStream(filepath.Join(installingDir, "knowledge-pack.zip"), packageFile); err != nil {
-		http.Error(w, "write package failed", http.StatusInternalServerError)
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(versionDir), 0o755); err != nil {
-		http.Error(w, "create versions directory failed", http.StatusInternalServerError)
-		return
-	}
-	if err := os.Rename(installingDir, versionDir); err != nil {
-		http.Error(w, "activate version directory failed", http.StatusInternalServerError)
-		return
-	}
-	cleanup = false
-
-	if err := h.writeLatestVersion(kbID, version); err != nil {
-		http.Error(w, "write latest version failed", http.StatusInternalServerError)
+	if err := h.storePublishedVersion(kbID, version, manifest, packageFile); err != nil {
+		writePublishError(w, err)
 		return
 	}
 
@@ -191,8 +160,9 @@ const adminPageHTML = `<!doctype html>
     h1 { font-size: 32px; margin: 0 0 8px; }
     section { background: #fffef7; border: 1px solid #d9dfd2; border-radius: 8px; padding: 18px; margin-top: 18px; }
     label { display: grid; gap: 6px; margin: 12px 0; font-weight: 650; }
-    input, button { font: inherit; }
-    input { padding: 10px; border: 1px solid #b9c2b2; border-radius: 6px; background: white; }
+    input, button, textarea { font: inherit; }
+    input, textarea { padding: 10px; border: 1px solid #b9c2b2; border-radius: 6px; background: white; }
+    textarea { min-height: 140px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.45; }
     button { border: 0; border-radius: 6px; background: #0f766e; color: white; padding: 10px 14px; cursor: pointer; }
     button.secondary { background: #334155; }
     button.copy { background: #ecfccb; color: #25330e; border: 1px solid #c7dca4; margin: 4px 6px 4px 0; }
@@ -222,7 +192,24 @@ const adminPageHTML = `<!doctype html>
   </section>
 
   <section>
-    <h2>发布版本</h2>
+    <h2>知识包构建器</h2>
+    <p class="muted">在这里直接编辑知识内容，服务端会自动生成 chunks.sqlite、vector.index、knowledge-pack.zip、manifest.json 和签名，并发布为 latest。</p>
+    <div class="grid">
+      <label>Version <input id="builderVersion" placeholder="2026.06.22.001"></label>
+      <label>LLM recommended <input id="builderLLM" value="Qwen3-4B-Q4_K_M"></label>
+    </div>
+    <button id="fillBuilderTemplate" class="secondary">填入模板</button>
+    <button id="nextBuilderVersion" class="secondary">生成今日版本号</button>
+    <button id="importPreviewToBuilder" class="secondary">从当前预览导入</button>
+    <label>chunks JSON <textarea id="builderChunks" spellcheck="false"></textarea></label>
+    <label>prompts JSON <textarea id="builderPrompts" spellcheck="false"></textarea></label>
+    <label>citations JSON <textarea id="builderCitations" spellcheck="false"></textarea></label>
+    <button id="buildPublish">构建并发布 latest</button>
+  </section>
+
+  <section>
+    <h2>手动上传版本</h2>
+    <p class="muted">保留旧路径：仅当你已经离线生成 manifest.json 和 knowledge-pack.zip 时使用。</p>
     <label>Version <input id="version" placeholder="2026.06.20.001"></label>
     <label>manifest.json <input id="manifest" type="file" accept="application/json,.json"></label>
     <label>knowledge-pack.zip <input id="package" type="file" accept=".zip,application/zip"></label>
@@ -268,18 +255,135 @@ const previewChunks = document.querySelector("#previewChunks");
 const previewRaw = document.querySelector("#previewRaw");
 const previewSummary = document.querySelector("#previewSummary");
 const servicePrefix = location.pathname.includes("/admin") ? location.pathname.split("/admin")[0] : "";
+let lastPreview = null;
 tokenInput.value = localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
+const defaultChunks = [
+  {
+    chunk_id: "topic-001",
+    title: "这里写知识点标题",
+    path: "topic/category/name",
+    source: "yi-flow-core",
+    content: "这里写完整知识内容。你准备在 App 里提问的关键词必须自然出现在 content 里。"
+  },
+  {
+    chunk_id: "topic-test-001",
+    title: "知识包验证问题",
+    path: "topic/testing/questions",
+    source: "yi-flow-core",
+    content: "用于验证知识包是否加载成功的问题：这里写你准备在 App 中提问的 3 到 5 个问题。"
+  }
+];
+const defaultPrompts = [
+  {
+    id: "test-question-001",
+    title: "验证知识包",
+    question: "请说明这里写知识点标题"
+  }
+];
+const defaultCitations = { citations: [] };
+fillBuilderTemplate(false);
 document.querySelector("#saveToken").onclick = () => {
   localStorage.setItem("yiFlowKnowledgeAdminToken", tokenInput.value);
   output.textContent = "token saved locally";
 };
 function token() { return tokenInput.value || localStorage.getItem("yiFlowKnowledgeAdminToken") || ""; }
 function kbID() { return kbIDInput.value.trim() || "yi-flow-core"; }
+function pretty(value) { return JSON.stringify(value, null, 2); }
+function fillBuilderTemplate(force) {
+  if (force || !document.querySelector("#builderChunks").value.trim()) {
+    document.querySelector("#builderChunks").value = pretty(defaultChunks);
+  }
+  if (force || !document.querySelector("#builderPrompts").value.trim()) {
+    document.querySelector("#builderPrompts").value = pretty(defaultPrompts);
+  }
+  if (force || !document.querySelector("#builderCitations").value.trim()) {
+    document.querySelector("#builderCitations").value = pretty(defaultCitations);
+  }
+  if (force || !document.querySelector("#builderVersion").value.trim()) {
+    document.querySelector("#builderVersion").value = todayVersion();
+  }
+}
+function todayVersion() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const prefix = y + "." + m + "." + d + ".";
+  let next = 1;
+  try {
+    const decoded = JSON.parse(versions.textContent || "{}");
+    for (const item of decoded.versions || []) {
+      if (String(item.version || "").startsWith(prefix)) {
+        const serial = Number(String(item.version).slice(prefix.length));
+        if (Number.isFinite(serial)) next = Math.max(next, serial + 1);
+      }
+    }
+  } catch (_) {}
+  return prefix + String(next).padStart(3, "0");
+}
+function parseJSONField(selector, fallback) {
+  const raw = document.querySelector(selector).value.trim();
+  if (!raw) return fallback;
+  return JSON.parse(raw);
+}
 async function showResponse(response) {
   const text = await response.text();
   output.textContent = response.status + "\n" + text;
   return text;
 }
+document.querySelector("#fillBuilderTemplate").onclick = () => fillBuilderTemplate(true);
+document.querySelector("#nextBuilderVersion").onclick = () => {
+  document.querySelector("#builderVersion").value = todayVersion();
+};
+document.querySelector("#importPreviewToBuilder").onclick = () => {
+  if (!lastPreview) {
+    output.textContent = "请先查看知识包内容，再导入到构建器。";
+    return;
+  }
+  document.querySelector("#builderVersion").value = todayVersion();
+  document.querySelector("#builderChunks").value = pretty(lastPreview.chunks.map((chunk) => ({
+    chunk_id: chunk.chunk_id,
+    title: chunk.title,
+    path: chunk.path,
+    source: chunk.source,
+    content: chunk.content
+  })));
+  document.querySelector("#builderPrompts").value = pretty(lastPreview.chunks.flatMap((chunk) => chunk.suggested_questions || []).slice(0, 8).map((question, index) => ({
+    id: "preview-question-" + String(index + 1).padStart(2, "0"),
+    title: question,
+    question
+  })));
+  output.textContent = "已从当前预览导入构建器，请修改后发布新版本。";
+};
+document.querySelector("#buildPublish").onclick = async () => {
+  try {
+    const chunksValue = parseJSONField("#builderChunks", []);
+    const promptsValue = parseJSONField("#builderPrompts", []);
+    const citationsValue = parseJSONField("#builderCitations", defaultCitations);
+    const chunks = Array.isArray(chunksValue) ? chunksValue : chunksValue.chunks;
+    const prompts = Array.isArray(promptsValue) ? promptsValue : promptsValue.prompts;
+    const body = {
+      version: document.querySelector("#builderVersion").value.trim(),
+      chunks: chunks || [],
+      prompts: prompts || [],
+      citations: citationsValue,
+      llm_recommended: document.querySelector("#builderLLM").value.split(",").map((item) => item.trim()).filter(Boolean)
+    };
+    const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/build-publish", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const text = await showResponse(response);
+    if (response.ok) {
+      const decoded = JSON.parse(text);
+      document.querySelector("#previewVersion").value = decoded.version;
+      document.querySelector("#rollbackVersion").value = decoded.version;
+    }
+  } catch (error) {
+    output.textContent = "构建发布失败：\n" + String(error);
+  }
+};
 document.querySelector("#publish").onclick = async () => {
   const form = new FormData();
   form.set("version", document.querySelector("#version").value.trim());
@@ -317,10 +421,12 @@ document.querySelector("#preview").onclick = async () => {
   if (!response.ok) {
     previewSummary.textContent = "内容预览失败";
     previewChunks.replaceChildren();
+    lastPreview = null;
     output.textContent = "preview failed: " + response.status;
     return;
   }
-  renderPreview(JSON.parse(text));
+  lastPreview = JSON.parse(text);
+  renderPreview(lastPreview);
   output.textContent = "preview loaded: " + response.status;
 };
 document.querySelector("#rollback").onclick = async () => {
@@ -569,6 +675,69 @@ func (h *Handler) writeLatestVersion(kbID string, version string) error {
 		return err
 	}
 	return os.Rename(tmpPath, latestPath)
+}
+
+var errVersionAlreadyExists = errors.New("version already exists")
+
+func (h *Handler) storePublishedVersion(kbID string, version string, manifest []byte, packageReader io.Reader) error {
+	versionDir := h.versionDir(kbID, version)
+	if _, err := os.Stat(versionDir); err == nil {
+		return errVersionAlreadyExists
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("version lookup failed: %w", err)
+	}
+
+	installingDir := filepath.Join(h.kbDir(kbID), ".installing-"+version)
+	_ = os.RemoveAll(installingDir)
+	if err := os.MkdirAll(installingDir, 0o755); err != nil {
+		return fmt.Errorf("create version directory failed: %w", err)
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(installingDir)
+		}
+	}()
+
+	if err := os.WriteFile(filepath.Join(installingDir, "manifest.json"), manifest, 0o644); err != nil {
+		return fmt.Errorf("write manifest failed: %w", err)
+	}
+	if err := writeStream(filepath.Join(installingDir, "knowledge-pack.zip"), packageReader); err != nil {
+		return fmt.Errorf("write package failed: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(versionDir), 0o755); err != nil {
+		return fmt.Errorf("create versions directory failed: %w", err)
+	}
+	if err := os.Rename(installingDir, versionDir); err != nil {
+		return fmt.Errorf("activate version directory failed: %w", err)
+	}
+	cleanup = false
+
+	if err := h.writeLatestVersion(kbID, version); err != nil {
+		return fmt.Errorf("write latest version failed: %w", err)
+	}
+	return nil
+}
+
+func writePublishError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errVersionAlreadyExists) {
+		http.Error(w, "version already exists", http.StatusConflict)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusInternalServerError)
+}
+
+func normalizedSigningSeed(seed []byte) ([]byte, error) {
+	if len(seed) == 0 {
+		return nil, nil
+	}
+	if len(seed) == 32 {
+		return append([]byte(nil), seed...), nil
+	}
+	if len(seed) == 64 {
+		return append([]byte(nil), seed[:32]...), nil
+	}
+	return nil, fmt.Errorf("knowledge pack signing key must be 32-byte seed or 64-byte private key")
 }
 
 func readFormFile(r *http.Request, field string) ([]byte, error) {

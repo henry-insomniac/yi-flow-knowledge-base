@@ -6,6 +6,8 @@ services:
       ADDR: ":8080"
       STORAGE_DIR: "/var/lib/yi-flow-knowledge-base"
       ADMIN_TOKEN: "${ADMIN_TOKEN:?set ADMIN_TOKEN}"
+      KNOWLEDGE_PACK_SIGNING_KEY_BASE64: "${KNOWLEDGE_PACK_SIGNING_KEY_BASE64:-}"
+      KNOWLEDGE_PACK_SIGNING_KEY_FILE: "${KNOWLEDGE_PACK_SIGNING_KEY_FILE:-}"
     ports:
       - "127.0.0.1:18085:8080"
     volumes:
