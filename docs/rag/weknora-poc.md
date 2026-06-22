@@ -12,7 +12,7 @@ The app keeps the signed Knowledge Pack path as the offline and rollback-safe ba
 flowchart LR
   App["iOS App\nAgent Runtime"] -->|Remote/Hybrid RAG request| Gateway["yi-flow Knowledge Base\nMobile-safe RAG Gateway"]
   App -->|Offline fallback| LocalPack["Signed Knowledge Pack\nSQLite FTS5"]
-  Gateway -->|X-API-Key, internal only| WeKnora["WeKnora\n/api/v1/knowledge-search"]
+  Gateway -->|X-API-Key, internal only| WeKnora["WeKnora\n/api/v1/knowledge-bases/:id/hybrid-search"]
   WeKnora --> Vector["Vector + Keyword Retrieval"]
   WeKnora --> Docs["Document/FAQ Knowledge Bases"]
   Gateway -->|Normalized chunks + citations| App
@@ -31,14 +31,17 @@ The POC uses the no-LLM search API so yi-flow can keep its own Agent prompt, evi
 - Health check: `GET /health`
 - API prefix: `/api/v1`
 - Auth header: `X-API-Key: <tenant API key>`
-- Retrieval endpoint: `POST /api/v1/knowledge-search`
+- Retrieval endpoint: `POST /api/v1/knowledge-bases/:id/hybrid-search`
 
 Minimal retrieval request:
 
 ```json
 {
-  "query": "知识包更新路径是什么",
-  "knowledge_base_id": "kb-xxxxxxxx"
+  "query_text": "知识包更新路径是什么",
+  "match_count": 5,
+  "disable_vector_match": true,
+  "disable_keywords_match": false,
+  "skip_context_enrichment": true
 }
 ```
 
@@ -97,7 +100,7 @@ If `WEKNORA_API_KEY` or `WEKNORA_KB_ID` is missing, the script only validates `/
 Use `docs/rag/eval-questions.json` as the shared question set for:
 
 - local Knowledge Pack / FTS5
-- WeKnora `/api/v1/knowledge-search`
+- WeKnora `/api/v1/knowledge-bases/:id/hybrid-search`
 - future yi-flow RAG gateway
 - future iOS Hybrid RAG real-device smoke
 
@@ -194,6 +197,6 @@ scripts/verify-weknora-gateway.sh
 
 ## Open Questions For Later Issues
 
-- Whether the production gateway should call `/knowledge-search` directly or use the WeKnora CLI/MCP layer.
+- Whether the production gateway should later add semantic/vector retrieval by configuring a production embedding model in WeKnora.
 - Whether one WeKnora KB maps one-to-one to a yi-flow `kb_id`, or whether one yi-flow KB fans out to multiple WeKnora KBs.
 - Whether remote RAG should synthesize server-side answers or always return raw chunks to the app. The current POC uses raw chunks only.

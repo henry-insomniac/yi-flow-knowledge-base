@@ -15,6 +15,7 @@ trap cleanup EXIT
 
 health_url="${BASE_URL%/}/health"
 health_body="$tmp_dir/health.body"
+: > "$health_body"
 health_status="$(
   curl -sS \
     --max-time "$TIMEOUT_SECONDS" \
@@ -35,6 +36,7 @@ fi
 
 request_json="$tmp_dir/request.json"
 response_json="$tmp_dir/response.json"
+: > "$response_json"
 
 python3 - "$QUERY" "$KB_ID" > "$request_json" <<'PY'
 import json
@@ -43,12 +45,15 @@ import sys
 query = sys.argv[1]
 kb_id = sys.argv[2]
 print(json.dumps({
-    "query": query,
-    "knowledge_base_id": kb_id,
+    "query_text": query,
+    "match_count": 5,
+    "disable_vector_match": True,
+    "disable_keywords_match": False,
+    "skip_context_enrichment": True,
 }, ensure_ascii=False))
 PY
 
-search_url="${BASE_URL%/}/api/v1/knowledge-search"
+search_url="${BASE_URL%/}/api/v1/knowledge-bases/${KB_ID}/hybrid-search"
 search_status="$(
   curl -sS \
     --max-time "$TIMEOUT_SECONDS" \
