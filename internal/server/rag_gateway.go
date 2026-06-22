@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ type RAGGatewayOptions struct {
 	Timeout            time.Duration
 	TopKMax            int
 	HTTPClient         *http.Client
+	AuditLog           io.Writer
 }
 
 type ragGateway struct {
@@ -32,6 +34,7 @@ type ragGateway struct {
 	timeout        time.Duration
 	topKMax        int
 	httpClient     *http.Client
+	auditLog       io.Writer
 }
 
 type ragGatewayQueryRequest struct {
@@ -95,6 +98,10 @@ func newRAGGateway(options RAGGatewayOptions) (*ragGateway, error) {
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
 	}
+	auditLog := options.AuditLog
+	if auditLog == nil {
+		auditLog = io.Discard
+	}
 	gateway := &ragGateway{
 		token:         strings.TrimSpace(options.Token),
 		weknoraAPIKey: strings.TrimSpace(options.WeKnoraAPIKey),
@@ -102,6 +109,7 @@ func newRAGGateway(options RAGGatewayOptions) (*ragGateway, error) {
 		timeout:       timeout,
 		topKMax:       topKMax,
 		httpClient:    client,
+		auditLog:      auditLog,
 	}
 	baseURL := strings.TrimSpace(options.WeKnoraBaseURL)
 	if baseURL != "" {
@@ -177,6 +185,7 @@ func (h *Handler) handleRAGQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	weknoraKBID, ok := h.ragGateway.kbMap[request.KBID]
 	if !ok {
+		h.ragGateway.auditQuery(request.KBID, "weknora", "rag_kb_not_mapped", request.Query, 0, 0)
 		writeRAGGatewayError(w, http.StatusBadRequest, "rag_kb_not_mapped", "kb_id is not mapped to a WeKnora knowledge base")
 		return
 	}
@@ -192,6 +201,7 @@ func (h *Handler) handleRAGQuery(w http.ResponseWriter, r *http.Request) {
 	chunks, err := h.ragGateway.queryWeKnora(r.Context(), request.Query, weknoraKBID, topK)
 	latency := time.Since(started).Milliseconds()
 	if err != nil {
+		h.ragGateway.auditQuery(request.KBID, "weknora", ragGatewayAuditStatusForError(err), request.Query, latency, 0)
 		writeRAGGatewayUpstreamError(w, err)
 		return
 	}
@@ -199,6 +209,7 @@ func (h *Handler) handleRAGQuery(w http.ResponseWriter, r *http.Request) {
 	if len(chunks) == 0 {
 		status = "empty_result"
 	}
+	h.ragGateway.auditQuery(request.KBID, "weknora", status, request.Query, latency, len(chunks))
 	writeJSON(w, http.StatusOK, ragGatewayQueryResponse{
 		Provider:         "weknora",
 		Status:           status,
@@ -253,6 +264,38 @@ func (g *ragGateway) queryWeKnora(parent context.Context, query string, weknoraK
 		return nil, errWeKnoraInvalidResponse
 	}
 	return normalizeWeKnoraChunks(decoded.Data, topK), nil
+}
+
+func (g *ragGateway) auditQuery(kbID string, provider string, status string, query string, latencyMS int64, chunks int) {
+	if g == nil || g.auditLog == nil {
+		return
+	}
+	queryHash := sha256.Sum256([]byte(query))
+	_, _ = fmt.Fprintf(
+		g.auditLog,
+		"event=rag_gateway_query kb_id=%s provider=%s status=%s query_hash=%x latency_ms=%d chunks=%d\n",
+		strings.TrimSpace(kbID),
+		strings.TrimSpace(provider),
+		strings.TrimSpace(status),
+		queryHash,
+		latencyMS,
+		chunks,
+	)
+}
+
+func ragGatewayAuditStatusForError(err error) string {
+	switch {
+	case errors.Is(err, errWeKnoraTimeout):
+		return "weknora_timeout"
+	case errors.Is(err, errWeKnoraUnauthorized):
+		return "weknora_unauthorized"
+	case errors.Is(err, errWeKnoraUpstreamStatus):
+		return "weknora_upstream_status"
+	case errors.Is(err, errWeKnoraInvalidResponse):
+		return "weknora_invalid_response"
+	default:
+		return "weknora_unavailable"
+	}
 }
 
 func normalizeWeKnoraChunks(results []weknoraSearchResult, topK int) []ragGatewayChunk {

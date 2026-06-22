@@ -41,6 +41,7 @@ func main() {
 			DefaultWeKnoraKBID: os.Getenv("WEKNORA_KB_ID"),
 			Timeout:            durationFromEnv("WEKNORA_TIMEOUT", 10*time.Second),
 			TopKMax:            intFromEnv("RAG_GATEWAY_TOP_K_MAX", 8),
+			AuditLog:           os.Stdout,
 		},
 	})
 	if err != nil {

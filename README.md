@@ -173,6 +173,8 @@ RAG_GATEWAY_KB_ID=yi-flow-core \
 scripts/verify-weknora-gateway.sh
 ```
 
+Gateway audit logs are written to stdout as `event=rag_gateway_query` lines with `kb_id`, `provider`, `status`, `query_hash`, `latency_ms`, and `chunks`. They intentionally do not include raw queries, app tokens, or WeKnora API keys.
+
 Reviewed WeKnora chunk export:
 
 ```bash

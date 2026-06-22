@@ -175,6 +175,14 @@ RAG_GATEWAY_TOP_K_MAX=8
 
 `WEKNORA_KB_ID` is accepted as a shorthand for mapping `yi-flow-core` when only one KB is being tested.
 
+Gateway audit logs are emitted as one line per accepted query:
+
+```text
+event=rag_gateway_query kb_id=yi-flow-core provider=weknora status=ok query_hash=<sha256> latency_ms=123 chunks=3
+```
+
+The log intentionally records the query hash instead of the raw query, and never includes the app-facing token or the server-side WeKnora API key.
+
 Gateway smoke:
 
 ```bash

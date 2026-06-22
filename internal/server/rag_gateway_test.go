@@ -106,6 +106,64 @@ func TestRAGGatewayQueriesWeKnoraAndNormalizesChunks(t *testing.T) {
 	}
 }
 
+func TestRAGGatewayAuditLogDoesNotExposeSecretsOrRawQuery(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(t, w, http.StatusOK, map[string]any{
+			"success": true,
+			"data": []map[string]any{
+				{
+					"id":                 "chunk-001",
+					"content":            "知识包更新路径通过 manifest.json 发布。",
+					"knowledge_title":    "知识包更新路径",
+					"score":              0.91,
+					"knowledge_filename": "runtime/update.md",
+					"knowledge_source":   "manual",
+				},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	var audit bytes.Buffer
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+		RAGGateway: server.RAGGatewayOptions{
+			Token:          "app-rag-token",
+			WeKnoraBaseURL: upstream.URL,
+			WeKnoraAPIKey:  "sk-weknora",
+			WeKnoraKBMap:   "yi-flow-core=kb-upstream",
+			Timeout:        5 * time.Second,
+			TopKMax:        8,
+			AuditLog:       &audit,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	rawQuery := "知识包更新路径"
+	request := httptest.NewRequest(http.MethodPost, "/rag/api/query", bytes.NewBufferString(`{"kb_id":"yi-flow-core","query":"`+rawQuery+`","top_k":1}`))
+	request.Header.Set("Authorization", "Bearer app-rag-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("gateway status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	logLine := audit.String()
+	for _, expected := range []string{"event=rag_gateway_query", "kb_id=yi-flow-core", "provider=weknora", "status=ok", "query_hash=", "latency_ms=", "chunks=1"} {
+		if !strings.Contains(logLine, expected) {
+			t.Fatalf("audit log missing %q in %q", expected, logLine)
+		}
+	}
+	for _, forbidden := range []string{rawQuery, "app-rag-token", "sk-weknora"} {
+		if strings.Contains(logLine, forbidden) {
+			t.Fatalf("audit log exposed %q in %q", forbidden, logLine)
+		}
+	}
+}
+
 func TestRAGGatewayRequiresAppToken(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("unauthorized request should not reach upstream")
