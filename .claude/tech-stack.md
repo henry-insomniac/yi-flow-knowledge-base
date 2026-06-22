@@ -12,6 +12,7 @@
 - 测试：标准库 `testing` + `httptest`，以公开 HTTP 接口做集成式行为测试
 - 存储：本地文件系统，生产环境通过 Docker volume 持久化
 - 管理界面：内置 `/admin/` 静态 HTML 页面，不拆独立前端项目
+- 外部知识源：萌娘百科入口使用标准库 HTTP/XML/JSON 读取公开 sitemap 和 MediaWiki API 摘要；默认源为 `https://zh.moegirl.org.cn/`
 - 部署：Docker / Docker Compose，宿主机本地端口 `127.0.0.1:18085`，由反代提供 HTTPS
 
 ## 文档规范
@@ -103,6 +104,7 @@ https://yi-flow.com/knowledge-base/ -> http://127.0.0.1:18085/
 - 不提交 `.env`、密钥、令牌、Cookie、账号凭据。
 - 示例配置使用 `.env.example` 或文档片段，不使用真实值。
 - 涉及外部 API 的流程必须说明鉴权方式和权限边界。
+- 涉及第三方公开内容的流程必须保存引用和许可信息。萌娘百科内容只允许生成摘要型知识包，不能保存完整条目、图片、完整 infobox 数据集或作为训练语料。
 - 涉及文件删除、发布、推送、远程写入的操作必须有明确前置检查。
 - 服务器 root 密码不得写入仓库、脚本或命令历史。部署后应改为 SSH key 登录，并轮换初始密码。
 - 签名私钥不得部署到服务器；服务器只保存公开 manifest、zip 包和 latest 指针。

@@ -349,12 +349,25 @@ func suggestedQuestions(chunk knowledgePackPreviewChunk) []string {
 }
 
 func firstSentence(content string) string {
+	content = stripLeadingMetadataLabels(content)
 	for _, separator := range []string{"。", "？", "?", "！", "!", "\n"} {
 		if before, _, ok := strings.Cut(content, separator); ok {
 			return truncateRunes(strings.TrimSpace(before), 48)
 		}
 	}
 	return truncateRunes(content, 48)
+}
+
+func stripLeadingMetadataLabels(content string) string {
+	content = strings.TrimSpace(content)
+	for strings.HasPrefix(content, "【") {
+		_, after, ok := strings.Cut(content, "】")
+		if !ok {
+			return content
+		}
+		content = strings.TrimSpace(after)
+	}
+	return content
 }
 
 func uniqueStrings(values []string, limit int) []string {

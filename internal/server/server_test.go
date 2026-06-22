@@ -432,6 +432,15 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	if !bytes.Contains(response.Body.Bytes(), []byte("/build-publish")) {
 		t.Fatalf("admin page missing build publish api usage")
 	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("萌娘百科摘要知识包")) {
+		t.Fatalf("admin page missing Moegirl summary pack builder")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("/moegirl/build-publish")) {
+		t.Fatalf("admin page missing Moegirl build publish api usage")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("CC BY-NC-SA 3.0 CN")) {
+		t.Fatalf("admin page missing Moegirl license notice")
+	}
 }
 
 func TestHealthzReportsOK(t *testing.T) {

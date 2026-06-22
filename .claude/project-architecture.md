@@ -56,6 +56,8 @@ Knowledge Pack 发布服务核心。当前提供：
 - `GET /healthz`：容器和反代健康检查。
 - `GET /admin/`：内置轻量管理页，不单独拆前端项目。
 - `POST /admin/api/kb/:kb_id/versions`：上传 `manifest.json` 和 `knowledge-pack.zip`，发布不可变版本并设为 latest。
+- `POST /admin/api/kb/:kb_id/build-publish`：从管理页 JSON 构建 `chunks.sqlite`、`vector.index`、`citations.json`、`prompts.json`、签名 manifest 和包，并发布为 latest。
+- `POST /admin/api/kb/:kb_id/moegirl/build-publish`：从萌娘百科公开 sitemap/API 构建摘要型知识包；只保存高层摘要、分类和原文引用，不保存完整条目、图片或 infobox 等价数据集。
 - `POST /admin/api/kb/:kb_id/latest`：把 latest 回滚/切换到已存在版本。
 - `GET /kb/:kb_id/latest/manifest.json`：App 端拉取 latest manifest。
 - `GET /kb/:kb_id/latest/preview`：管理页读取 latest 知识包 chunks，展示内容摘要和可复制提问样例。
@@ -97,6 +99,7 @@ Knowledge Pack 发布服务核心。当前提供：
 - Knowledge Pack 版本发布后不可覆盖；需要修正时发布新版本或回滚 latest。
 - 私钥不应放在服务器上。推荐在本地或 CI 中签名后上传已签名的 manifest/package，服务器只托管公开产物。
 - 生产服务器不使用 root 密码长期登录；应创建部署用户、使用 SSH key，并关闭 root password login。
+- 第三方内容源必须记录许可、来源 URL 和使用边界。萌娘百科入口固定为摘要与引用用途，遵守 `CC BY-NC-SA 3.0 CN`，不得扩展成全文镜像、训练数据集或商业再分发包。
 
 ## 架构变更记录
 
@@ -105,3 +108,4 @@ Knowledge Pack 发布服务核心。当前提供：
 | 2026-06-18 | 初始化 Agent 项目文档 | 建立项目长期上下文和协作基线 | 已创建 `AGENTS.md` 与 `.claude` 文档 |
 | 2026-06-20 | 新增 Knowledge Pack 发布服务 | 支撑 iOS App 远程更新知识包，提供公开 manifest/package 下载和 token 保护的管理接口 | `scripts/verify-knowledge-base-server.sh` 通过 |
 | 2026-06-21 | 新增 Knowledge Pack 内容预览 | 管理页可查看 chunks 内容并复制样例问题到 App 验证知识包加载 | `scripts/verify-knowledge-base-server.sh` 通过 |
+| 2026-06-22 | 新增萌娘百科摘要知识包构建入口 | 支持从公开 sitemap/API 生成带引用的 ACGN 摘要知识包，避免全文镜像和训练数据用途 | `go test ./...` 通过 |

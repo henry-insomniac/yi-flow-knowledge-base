@@ -31,6 +31,8 @@ Authorization: Bearer <ADMIN_TOKEN>
 
 管理页内置“知识包构建器”，用于直接提交 chunks/prompts/citations JSON，由服务端生成 `chunks.sqlite`、`vector.index`、`knowledge-pack.zip`、`manifest.json`，签名后发布为 latest。
 
+管理页还内置“萌娘百科摘要知识包”构建器。该入口从萌娘百科公开 sitemap/API 读取主条目标题和 `exintro` 摘要，生成摘要型 chunks 与 `citations.json` 引用；它不会保存完整条目、不会复刻 infobox 数据集、不会下载图片，也不用于 AI 训练。生成内容必须按 `CC BY-NC-SA 3.0 CN` 署名并保留原页面 URL。
+
 服务端需要配置签名私钥，二选一：
 
 ```bash
@@ -64,6 +66,39 @@ curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/yi-flow-core/build
     ],
     "citations": {"citations":[]}
   }'
+```
+
+从指定条目构建萌娘百科摘要包：
+
+```bash
+curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/moegirl-acgn-summary/moegirl/build-publish" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "2026.06.22.101",
+    "titles": ["初音未来", "东方Project"],
+    "llm_recommended": ["Qwen3-4B-Q4_K_M"]
+  }'
+```
+
+从萌娘百科 sitemap 自动取前 N 个主条目构建摘要包：
+
+```bash
+curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/moegirl-acgn-summary/moegirl/build-publish" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "2026.06.22.102",
+    "limit": 50
+  }'
+```
+
+可选 Moegirl 源配置，通常生产不需要设置：
+
+```bash
+MOEGIRL_API_URL=https://zh.moegirl.org.cn/api.php
+MOEGIRL_SITEMAP_INDEX_URL=https://zh.moegirl.org.cn/sitemap/sitemap-index-zhmoegirl.xml
+MOEGIRL_PUBLIC_ARTICLE_ORIGIN=https://zh.moegirl.org.cn
 ```
 
 发布新版本并设为 latest：

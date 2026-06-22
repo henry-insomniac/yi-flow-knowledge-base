@@ -14,15 +14,21 @@ import (
 )
 
 type Options struct {
-	StorageDir               string
-	AdminToken               string
-	KnowledgePackSigningSeed []byte
+	StorageDir                 string
+	AdminToken                 string
+	KnowledgePackSigningSeed   []byte
+	MoegirlAPIURL              string
+	MoegirlSitemapIndexURL     string
+	MoegirlPublicArticleOrigin string
 }
 
 type Handler struct {
-	storageDir               string
-	adminToken               string
-	knowledgePackSigningSeed []byte
+	storageDir                 string
+	adminToken                 string
+	knowledgePackSigningSeed   []byte
+	moegirlAPIURL              string
+	moegirlSitemapIndexURL     string
+	moegirlPublicArticleOrigin string
 }
 
 func NewHandler(options Options) (http.Handler, error) {
@@ -37,9 +43,12 @@ func NewHandler(options Options) (http.Handler, error) {
 		return nil, err
 	}
 	return &Handler{
-		storageDir:               options.StorageDir,
-		adminToken:               options.AdminToken,
-		knowledgePackSigningSeed: signingSeed,
+		storageDir:                 options.StorageDir,
+		adminToken:                 options.AdminToken,
+		knowledgePackSigningSeed:   signingSeed,
+		moegirlAPIURL:              defaultString(options.MoegirlAPIURL, defaultMoegirlAPIURL),
+		moegirlSitemapIndexURL:     defaultString(options.MoegirlSitemapIndexURL, defaultMoegirlSitemapIndexURL),
+		moegirlPublicArticleOrigin: strings.TrimRight(defaultString(options.MoegirlPublicArticleOrigin, defaultMoegirlPublicArticleOrigin), "/"),
 	}, nil
 }
 
@@ -50,6 +59,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "ok\n")
 	case r.Method == http.MethodGet && (r.URL.Path == "/admin" || r.URL.Path == "/admin/"):
 		h.handleAdminPage(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/moegirl/build-publish"):
+		h.handleBuildAndPublishMoegirlSummary(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/build-publish"):
 		h.handleBuildAndPublishVersion(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/versions"):
@@ -69,6 +80,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func defaultString(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func (h *Handler) handleAdminPage(w http.ResponseWriter, _ *http.Request) {
@@ -205,6 +224,17 @@ const adminPageHTML = `<!doctype html>
     <label>prompts JSON <textarea id="builderPrompts" spellcheck="false"></textarea></label>
     <label>citations JSON <textarea id="builderCitations" spellcheck="false"></textarea></label>
     <button id="buildPublish">构建并发布 latest</button>
+  </section>
+
+  <section>
+    <h2>萌娘百科摘要知识包</h2>
+    <p class="muted">从萌娘百科公开 sitemap/API 构建摘要型 Knowledge Pack。仅保存高层摘要、分类和来源引用；遵守 CC BY-NC-SA 3.0 CN，不复现完整条目，不用于 AI 训练。</p>
+    <div class="grid">
+      <label>Version <input id="moegirlVersion" placeholder="2026.06.22.101"></label>
+      <label>Sitemap page limit <input id="moegirlLimit" type="number" min="1" max="3000" value="50"></label>
+    </div>
+    <label>Article titles（每行一个；留空则从 sitemap 取前 N 个主条目）<textarea id="moegirlTitles" spellcheck="false" placeholder="初音未来&#10;东方Project"></textarea></label>
+    <button id="buildMoegirl">构建萌娘百科摘要包并发布 latest</button>
   </section>
 
   <section>
@@ -382,6 +412,32 @@ document.querySelector("#buildPublish").onclick = async () => {
     }
   } catch (error) {
     output.textContent = "构建发布失败：\n" + String(error);
+  }
+};
+document.querySelector("#buildMoegirl").onclick = async () => {
+  try {
+    const rawTitles = document.querySelector("#moegirlTitles").value;
+    const titles = rawTitles.split(/[\n,，]/).map((item) => item.trim()).filter(Boolean);
+    const body = {
+      version: document.querySelector("#moegirlVersion").value.trim() || todayVersion(),
+      titles,
+      limit: Math.max(1, Math.min(3000, Number(document.querySelector("#moegirlLimit").value || 50))),
+      llm_recommended: document.querySelector("#builderLLM").value.split(",").map((item) => item.trim()).filter(Boolean)
+    };
+    const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/moegirl/build-publish", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const text = await showResponse(response);
+    if (response.ok) {
+      const decoded = JSON.parse(text);
+      document.querySelector("#previewVersion").value = decoded.version;
+      document.querySelector("#rollbackVersion").value = decoded.version;
+      document.querySelector("#moegirlVersion").value = todayVersion();
+    }
+  } catch (error) {
+    output.textContent = "萌娘百科摘要包构建发布失败：\n" + String(error);
   }
 };
 document.querySelector("#publish").onclick = async () => {

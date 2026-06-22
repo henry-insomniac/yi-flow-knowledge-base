@@ -26,9 +26,12 @@ func main() {
 	}
 
 	handler, err := server.NewHandler(server.Options{
-		StorageDir:               storageDir,
-		AdminToken:               adminToken,
-		KnowledgePackSigningSeed: signingSeed,
+		StorageDir:                 storageDir,
+		AdminToken:                 adminToken,
+		KnowledgePackSigningSeed:   signingSeed,
+		MoegirlAPIURL:              os.Getenv("MOEGIRL_API_URL"),
+		MoegirlSitemapIndexURL:     os.Getenv("MOEGIRL_SITEMAP_INDEX_URL"),
+		MoegirlPublicArticleOrigin: os.Getenv("MOEGIRL_PUBLIC_ARTICLE_ORIGIN"),
 	})
 	if err != nil {
 		log.Fatalf("create handler: %v", err)
