@@ -20,6 +20,7 @@ type Options struct {
 	MoegirlAPIURL              string
 	MoegirlSitemapIndexURL     string
 	MoegirlPublicArticleOrigin string
+	RAGGateway                 RAGGatewayOptions
 }
 
 type Handler struct {
@@ -29,6 +30,7 @@ type Handler struct {
 	moegirlAPIURL              string
 	moegirlSitemapIndexURL     string
 	moegirlPublicArticleOrigin string
+	ragGateway                 *ragGateway
 }
 
 func NewHandler(options Options) (http.Handler, error) {
@@ -42,6 +44,10 @@ func NewHandler(options Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	ragGateway, err := newRAGGateway(options.RAGGateway)
+	if err != nil {
+		return nil, err
+	}
 	return &Handler{
 		storageDir:                 options.StorageDir,
 		adminToken:                 options.AdminToken,
@@ -49,6 +55,7 @@ func NewHandler(options Options) (http.Handler, error) {
 		moegirlAPIURL:              defaultString(options.MoegirlAPIURL, defaultMoegirlAPIURL),
 		moegirlSitemapIndexURL:     defaultString(options.MoegirlSitemapIndexURL, defaultMoegirlSitemapIndexURL),
 		moegirlPublicArticleOrigin: strings.TrimRight(defaultString(options.MoegirlPublicArticleOrigin, defaultMoegirlPublicArticleOrigin), "/"),
+		ragGateway:                 ragGateway,
 	}, nil
 }
 
@@ -57,6 +64,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/healthz":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "ok\n")
+	case r.Method == http.MethodPost && r.URL.Path == "/rag/api/query":
+		h.handleRAGQuery(w, r)
 	case r.Method == http.MethodGet && (r.URL.Path == "/admin" || r.URL.Path == "/admin/"):
 		h.handleAdminPage(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/moegirl/build-publish"):

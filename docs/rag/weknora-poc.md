@@ -119,6 +119,71 @@ Minimum pass before app integration:
 | `content` | `content` | Trim to app-safe max length in the gateway. |
 | `score` | `score` | Preserve numeric value; normalize only if necessary. |
 
+## Mobile-safe Gateway
+
+The app-facing endpoint is:
+
+```http
+POST /rag/api/query
+Authorization: Bearer <RAG_GATEWAY_TOKEN>
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "kb_id": "yi-flow-core",
+  "query": "知识包更新路径是什么",
+  "top_k": 5,
+  "mode": "hybrid"
+}
+```
+
+Response:
+
+```json
+{
+  "provider": "weknora",
+  "status": "ok",
+  "knowledge_version": "remote:weknora:kb-xxxxxxxx",
+  "query": "知识包更新路径是什么",
+  "chunks": [
+    {
+      "chunk_id": "weknora:chunk-00000001",
+      "title": "知识包更新路径",
+      "path": "runtime/update.md",
+      "source": "weknora:manual",
+      "content": "命中的分块文本",
+      "score": 0.95
+    }
+  ],
+  "latency_ms": 123
+}
+```
+
+Configuration:
+
+```bash
+RAG_GATEWAY_TOKEN=replace-with-app-facing-token
+WEKNORA_BASE_URL=http://weknora-app:8080
+WEKNORA_API_KEY=sk-xxxx
+WEKNORA_KB_MAP=yi-flow-core=kb-xxxx,moegirl-acgn-summary=kb-yyyy
+WEKNORA_TIMEOUT=10s
+RAG_GATEWAY_TOP_K_MAX=8
+```
+
+`WEKNORA_KB_ID` is accepted as a shorthand for mapping `yi-flow-core` when only one KB is being tested.
+
+Gateway smoke:
+
+```bash
+RAG_GATEWAY_BASE_URL=http://127.0.0.1:18085 \
+RAG_GATEWAY_TOKEN=replace-with-app-facing-token \
+RAG_GATEWAY_KB_ID=yi-flow-core \
+scripts/verify-weknora-gateway.sh
+```
+
 ## Open Questions For Later Issues
 
 - Whether the production gateway should call `/knowledge-search` directly or use the WeKnora CLI/MCP layer.

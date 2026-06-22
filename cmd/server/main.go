@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,15 @@ func main() {
 		MoegirlAPIURL:              os.Getenv("MOEGIRL_API_URL"),
 		MoegirlSitemapIndexURL:     os.Getenv("MOEGIRL_SITEMAP_INDEX_URL"),
 		MoegirlPublicArticleOrigin: os.Getenv("MOEGIRL_PUBLIC_ARTICLE_ORIGIN"),
+		RAGGateway: server.RAGGatewayOptions{
+			Token:              os.Getenv("RAG_GATEWAY_TOKEN"),
+			WeKnoraBaseURL:     os.Getenv("WEKNORA_BASE_URL"),
+			WeKnoraAPIKey:      os.Getenv("WEKNORA_API_KEY"),
+			WeKnoraKBMap:       os.Getenv("WEKNORA_KB_MAP"),
+			DefaultWeKnoraKBID: os.Getenv("WEKNORA_KB_ID"),
+			Timeout:            durationFromEnv("WEKNORA_TIMEOUT", 10*time.Second),
+			TopKMax:            intFromEnv("RAG_GATEWAY_TOP_K_MAX", 8),
+		},
 	})
 	if err != nil {
 		log.Fatalf("create handler: %v", err)
@@ -55,6 +65,30 @@ func getenv(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func durationFromEnv(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		log.Fatalf("%s must be a Go duration such as 10s: %v", key, err)
+	}
+	return duration
+}
+
+func intFromEnv(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Fatalf("%s must be an integer: %v", key, err)
+	}
+	return parsed
 }
 
 func knowledgePackSigningSeedFromEnv() ([]byte, error) {

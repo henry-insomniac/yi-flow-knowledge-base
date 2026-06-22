@@ -163,6 +163,15 @@ WEKNORA_QUERY="知识包更新路径是什么" \
 scripts/verify-weknora-poc.sh
 ```
 
+Mobile-safe gateway smoke:
+
+```bash
+RAG_GATEWAY_BASE_URL=http://127.0.0.1:18085 \
+RAG_GATEWAY_TOKEN=replace-with-app-facing-token \
+RAG_GATEWAY_KB_ID=yi-flow-core \
+scripts/verify-weknora-gateway.sh
+```
+
 ## Deployment
 
 The server is deployed on the VPS under:
