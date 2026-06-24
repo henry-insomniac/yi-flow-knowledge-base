@@ -1,0 +1,112 @@
+[
+  {
+    "id": "yi-flow-core-q001",
+    "title": "知识包更新路径",
+    "question": "yi-flow 知识包更新路径是什么？"
+  },
+  {
+    "id": "yi-flow-core-q002",
+    "title": "发布流程",
+    "question": "知识包发布流程是什么？"
+  },
+  {
+    "id": "yi-flow-core-q003",
+    "title": "latest manifest",
+    "question": "latest manifest 在哪里获取？"
+  },
+  {
+    "id": "yi-flow-core-q004",
+    "title": "knowledge_pack zip",
+    "question": "knowledge_pack.zip 下载路径是什么？"
+  },
+  {
+    "id": "yi-flow-core-q005",
+    "title": "active version",
+    "question": "active_version 如何切换？"
+  },
+  {
+    "id": "yi-flow-core-q006",
+    "title": "manual generated split",
+    "question": "知识包人工源和生成产物怎么分层？"
+  },
+  {
+    "id": "yi-flow-core-q007",
+    "title": "package generated files",
+    "question": "知识包构建后会生成哪些文件？"
+  },
+  {
+    "id": "yi-flow-core-q008",
+    "title": "Agent answer flow",
+    "question": "Agent 回答链路是什么？"
+  },
+  {
+    "id": "yi-flow-core-q009",
+    "title": "controlled no answer",
+    "question": "为什么证据不足时不能乱答？"
+  },
+  {
+    "id": "yi-flow-core-q010",
+    "title": "citation policy",
+    "question": "引用来源应该如何展示？"
+  },
+  {
+    "id": "yi-flow-core-q011",
+    "title": "dedupe answer",
+    "question": "怎么避免回答列表重复？"
+  },
+  {
+    "id": "yi-flow-core-q012",
+    "title": "Hybrid RAG",
+    "question": "Hybrid RAG 如何判断远程命中还是本地回退？"
+  },
+  {
+    "id": "yi-flow-core-q013",
+    "title": "WeKnora fallback",
+    "question": "WeKnora 不可用时 App 怎么处理？"
+  },
+  {
+    "id": "yi-flow-core-q014",
+    "title": "Workbench pages",
+    "question": "yi-flow 工作台包含哪些页面？"
+  },
+  {
+    "id": "yi-flow-core-q015",
+    "title": "Model providers",
+    "question": "当前模型 provider 能力怎么区分？"
+  },
+  {
+    "id": "yi-flow-core-q016",
+    "title": "Image generation route",
+    "question": "图片生成请求应该走什么路径？"
+  },
+  {
+    "id": "yi-flow-core-q017",
+    "title": "Tool description layer",
+    "question": "工具描述层包含哪些字段？"
+  },
+  {
+    "id": "yi-flow-core-q018",
+    "title": "Composable tools",
+    "question": "结构化计划层如何组合原子工具？"
+  },
+  {
+    "id": "yi-flow-core-q019",
+    "title": "Real device smoke",
+    "question": "真机 Agent smoke 如何检查回答质量？"
+  },
+  {
+    "id": "yi-flow-core-q020",
+    "title": "Debug answer samples",
+    "question": "yi_flow_main_app_agent_answer_sample 用来检查什么？"
+  },
+  {
+    "id": "yi-flow-core-q021",
+    "title": "Knowledge pack security",
+    "question": "Knowledge Pack 为什么不能包含远程可执行代码？"
+  },
+  {
+    "id": "yi-flow-core-q022",
+    "title": "Manifest validation",
+    "question": "App 安装知识包时校验哪些 manifest 字段？"
+  }
+]

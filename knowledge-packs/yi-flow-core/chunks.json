@@ -1,0 +1,72 @@
+[
+  {
+    "chunk_id": "yi-flow-core-knowledge-update-path-001",
+    "title": "yi-flow 知识包更新路径",
+    "path": "docs/architecture/knowledge-pack-update-flow.zh.mmd",
+    "source": "yi-flow-knowledge-app",
+    "content": "yi-flow 知识包更新路径从远程 latest manifest 开始。App 拉取 /kb/yi-flow-core/latest/manifest.json，校验 schema、content_hash、signature、files 和 security 后，与本地 active_version 对比；发现新版本时下载 /kb/yi-flow-core/versions/<version>/knowledge-pack.zip，校验 sha256 和签名，再解压到版本目录，最后原子写入 active_version。校验或安装失败时必须保留旧 active_version。"
+  },
+  {
+    "chunk_id": "yi-flow-core-builder-publish-001",
+    "title": "知识包 builder publish 流程",
+    "path": "README.md#admin-api",
+    "source": "yi-flow-knowledge-base",
+    "content": "知识包发布由服务端 build-publish 接口完成。人工维护 chunks JSON、prompts JSON、citations JSON；服务端根据这些输入生成 chunks.sqlite、vector.index、prompts.json、citations.json、knowledge-pack.zip、manifest.json、content_hash 和 ed25519 signature，并把该版本设为 latest。人工源文件不应直接提交 chunks.sqlite、vector.index、manifest.json 或 knowledge-pack.zip。"
+  },
+  {
+    "chunk_id": "yi-flow-core-agent-answer-flow-001",
+    "title": "Agent 回答链路",
+    "path": "docs/architecture/agent-answer-flow.zh.mmd",
+    "source": "yi-flow-knowledge-app",
+    "content": "Agent 回答链路是 Query -> intent router -> tool plan -> knowledge.search -> evidence policy -> citation constrained prompt -> selected model provider -> answer normalize -> citation attach。检索证据不足时返回受控的本地知识不足说明，不把模型推测写成本地知识。正文不得泄漏 TopK chunks、原始 JSON、chunk_id 伪引用或调试推理文本。"
+  },
+  {
+    "chunk_id": "yi-flow-core-hybrid-rag-001",
+    "title": "Hybrid RAG 与远程 WeKnora 回退",
+    "path": "docs/knowledge-pack/weknora-hybrid-rag-acceptance.md",
+    "source": "yi-flow-knowledge-app",
+    "content": "Hybrid RAG 开启后，远程 WeKnora 命中时 retrieval_provider 应显示 Remote_WeKnora；远程未配置、超时、5xx 或空结果时回退到 Local_Knowledge_Pack。Local RAG 只使用已安装签名知识包。真机验收时必须区分 Remote_WeKnora 命中和 Local_Knowledge_Pack 回退，不能把回退误判为远程成功。"
+  },
+  {
+    "chunk_id": "yi-flow-core-workbench-surfaces-001",
+    "title": "yi-flow 工作台页面",
+    "path": "docs/adr/0001-end-side-agent-workbench.md",
+    "source": "yi-flow-knowledge-app",
+    "content": "yi-flow 是端侧 Agent Workbench，主页面由 App Shell 承载，核心工作区包括问答、知识、模型、能力四个页面。问答页承接对话和 Agent 计划执行；知识页管理知识包与检索状态；模型页管理本地或远程 provider；能力页展示可组合工具与权限边界。"
+  },
+  {
+    "chunk_id": "yi-flow-core-model-runtime-001",
+    "title": "模型 Runtime 与 provider 能力",
+    "path": "Runtime/ModelRuntime/ModelRuntime.swift",
+    "source": "yi-flow-knowledge-app",
+    "content": "Model Runtime 通过 provider capability 区分 textGeneration、streaming、visionInput、imageGeneration、audioInput 和 fileInput。Qwen3 4B 可作为本地文本模型；OpenAI-compatible provider 可作为远程文本或多模态 provider。图片生成必须走 image.generate 或 image provider，不应被普通聊天路径伪装成已经生成图片。"
+  },
+  {
+    "chunk_id": "yi-flow-core-tool-description-layer-001",
+    "title": "工具描述层与可组合执行",
+    "path": "Runtime/AgentRuntime/AgentRuntime.swift",
+    "source": "yi-flow-knowledge-app",
+    "content": "yi-flow 的工具描述层由 AgentToolSpec、AgentToolDescriptor 和 AgentToolRegistry 表达。每个原子工具应包含 name、description、intentAffordances、inputSchema、outputSchema、preconditions、effects、requiredCapabilities、evidenceContract、failureModes、costLatency、composableWith、safetyPolicy 和 outputContract。结构化计划层可以基于这些工具描述拼装多步执行。"
+  },
+  {
+    "chunk_id": "yi-flow-core-citation-answer-policy-001",
+    "title": "引用与答案规范",
+    "path": "Runtime/AgentRuntime/AgentRuntime.swift",
+    "source": "yi-flow-knowledge-app",
+    "content": "RAG 答案必须由结构化 citations 附带来源卡片，正文保持自然语言，不应直接输出 chunk_id、[1] 伪引用、Markdown 代码块 JSON、TopK chunks 或模型内部推理。列表类问题需要有明确清单证据；证据不足时不补全条目。答案归一化要去除重复列表片段，避免同一批候选反复出现。"
+  },
+  {
+    "chunk_id": "yi-flow-core-real-device-smoke-001",
+    "title": "真机 Agent smoke 验收",
+    "path": "scripts/verify-ios-app.sh",
+    "source": "yi-flow-knowledge-app",
+    "content": "真机 Agent smoke 通过 verify-ios-app.sh 运行。设置 YIFLOW_AGENT_ANSWER_DEBUG_TEXT=1 时，日志会打印 yi_flow_main_app_agent_answer_sample，用于检查回答文本是否出现重复、伪引用、原始 JSON 或跨域误答。常用验收查询包括 你好、知识包更新路径、能力平台支持哪些集成、生成图片请求和项目状态总结。"
+  },
+  {
+    "chunk_id": "yi-flow-core-pack-security-001",
+    "title": "Knowledge Pack 安全边界",
+    "path": "docs/knowledge-pack/manifest-v1.md",
+    "source": "yi-flow-knowledge-app",
+    "content": "Knowledge Pack manifest v1 不允许远程可执行代码。security.executable_code_allowed 必须为 false，remote_code_policy 必须禁止远程代码。知识包只能包含知识、索引、引用、资源、提示词和元数据；业务能力扩展必须走 App 预置 capability 与权限配置协议。App 安装时必须校验 schema、hash、signature、文件清单和 embedding 兼容性。"
+  }
+]

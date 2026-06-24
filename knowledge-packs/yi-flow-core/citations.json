@@ -1,0 +1,40 @@
+{
+  "citations": [
+    {
+      "chunk_id": "yi-flow-core-knowledge-update-path-001",
+      "title": "yi-flow 知识包更新路径",
+      "source": "yi-flow-knowledge-app",
+      "path": "docs/architecture/knowledge-pack-update-flow.zh.mmd"
+    },
+    {
+      "chunk_id": "yi-flow-core-builder-publish-001",
+      "title": "知识包 builder publish 流程",
+      "source": "yi-flow-knowledge-base",
+      "path": "README.md#admin-api"
+    },
+    {
+      "chunk_id": "yi-flow-core-agent-answer-flow-001",
+      "title": "Agent 回答链路",
+      "source": "yi-flow-knowledge-app",
+      "path": "docs/architecture/agent-answer-flow.zh.mmd"
+    },
+    {
+      "chunk_id": "yi-flow-core-hybrid-rag-001",
+      "title": "Hybrid RAG 与远程 WeKnora 回退",
+      "source": "yi-flow-knowledge-app",
+      "path": "docs/knowledge-pack/weknora-hybrid-rag-acceptance.md"
+    },
+    {
+      "chunk_id": "yi-flow-core-tool-description-layer-001",
+      "title": "工具描述层与可组合执行",
+      "source": "yi-flow-knowledge-app",
+      "path": "Runtime/AgentRuntime/AgentRuntime.swift"
+    },
+    {
+      "chunk_id": "yi-flow-core-pack-security-001",
+      "title": "Knowledge Pack 安全边界",
+      "source": "yi-flow-knowledge-app",
+      "path": "docs/knowledge-pack/manifest-v1.md"
+    }
+  ]
+}

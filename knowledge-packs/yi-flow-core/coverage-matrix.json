@@ -1,0 +1,119 @@
+{
+  "questions": [
+    {
+      "question": "yi-flow 知识包更新路径是什么？",
+      "status": "present",
+      "coverage_key": "update_path",
+      "chunk_ids": ["yi-flow-core-knowledge-update-path-001"]
+    },
+    {
+      "question": "知识包发布流程是什么？",
+      "status": "present",
+      "coverage_key": "publish_flow",
+      "chunk_ids": ["yi-flow-core-builder-publish-001"]
+    },
+    {
+      "question": "latest manifest 在哪里获取？",
+      "status": "present",
+      "coverage_key": "latest_manifest",
+      "chunk_ids": ["yi-flow-core-knowledge-update-path-001", "yi-flow-core-builder-publish-001"]
+    },
+    {
+      "question": "knowledge_pack.zip 下载路径是什么？",
+      "status": "present",
+      "coverage_key": "package_zip",
+      "chunk_ids": ["yi-flow-core-knowledge-update-path-001"]
+    },
+    {
+      "question": "active_version 如何切换？",
+      "status": "present",
+      "coverage_key": "active_version",
+      "chunk_ids": ["yi-flow-core-knowledge-update-path-001"]
+    },
+    {
+      "question": "知识包人工源和生成产物怎么分层？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-builder-publish-001"]
+    },
+    {
+      "question": "知识包构建后会生成哪些文件？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-builder-publish-001"]
+    },
+    {
+      "question": "Agent 回答链路是什么？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-agent-answer-flow-001"]
+    },
+    {
+      "question": "为什么证据不足时不能乱答？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-agent-answer-flow-001", "yi-flow-core-citation-answer-policy-001"]
+    },
+    {
+      "question": "引用来源应该如何展示？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-citation-answer-policy-001"]
+    },
+    {
+      "question": "怎么避免回答列表重复？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-citation-answer-policy-001"]
+    },
+    {
+      "question": "Hybrid RAG 如何判断远程命中还是本地回退？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-hybrid-rag-001"]
+    },
+    {
+      "question": "WeKnora 不可用时 App 怎么处理？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-hybrid-rag-001"]
+    },
+    {
+      "question": "yi-flow 工作台包含哪些页面？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-workbench-surfaces-001"]
+    },
+    {
+      "question": "当前模型 provider 能力怎么区分？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-model-runtime-001"]
+    },
+    {
+      "question": "图片生成请求应该走什么路径？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-model-runtime-001"]
+    },
+    {
+      "question": "工具描述层包含哪些字段？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-tool-description-layer-001"]
+    },
+    {
+      "question": "结构化计划层如何组合原子工具？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-tool-description-layer-001"]
+    },
+    {
+      "question": "真机 Agent smoke 如何检查回答质量？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-real-device-smoke-001"]
+    },
+    {
+      "question": "yi_flow_main_app_agent_answer_sample 用来检查什么？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-real-device-smoke-001"]
+    },
+    {
+      "question": "Knowledge Pack 为什么不能包含远程可执行代码？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-pack-security-001"]
+    },
+    {
+      "question": "App 安装知识包时校验哪些 manifest 字段？",
+      "status": "present",
+      "chunk_ids": ["yi-flow-core-pack-security-001"]
+    }
+  ]
+}
