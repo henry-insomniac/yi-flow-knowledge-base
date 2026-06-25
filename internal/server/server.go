@@ -22,7 +22,6 @@ type Options struct {
 	MoegirlSitemapIndexURL     string
 	MoegirlPublicArticleOrigin string
 	RAGGateway                 RAGGatewayOptions
-	RAGFlow                    RAGFlowOptions
 }
 
 type Handler struct {
@@ -33,7 +32,6 @@ type Handler struct {
 	moegirlSitemapIndexURL     string
 	moegirlPublicArticleOrigin string
 	ragGateway                 *ragGateway
-	ragFlow                    *ragFlowClient
 }
 
 func NewHandler(options Options) (http.Handler, error) {
@@ -51,10 +49,6 @@ func NewHandler(options Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	ragFlow, err := newRAGFlowClient(options.RAGFlow)
-	if err != nil {
-		return nil, err
-	}
 	return &Handler{
 		storageDir:                 options.StorageDir,
 		adminToken:                 options.AdminToken,
@@ -63,7 +57,6 @@ func NewHandler(options Options) (http.Handler, error) {
 		moegirlSitemapIndexURL:     defaultString(options.MoegirlSitemapIndexURL, defaultMoegirlSitemapIndexURL),
 		moegirlPublicArticleOrigin: strings.TrimRight(defaultString(options.MoegirlPublicArticleOrigin, defaultMoegirlPublicArticleOrigin), "/"),
 		ragGateway:                 ragGateway,
-		ragFlow:                    ragFlow,
 	}, nil
 }
 
@@ -78,12 +71,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAdminPage(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/rag/compare"):
 		h.handleAdminRAGCompare(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/weknora/export-dry-run"):
+		h.handleWeKnoraExportDryRun(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/weknora/export-publish"):
 		h.handleWeKnoraExportPublish(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/ragflow/export-dry-run"):
-		h.handleRAGFlowExportDryRun(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/ragflow/export-publish"):
-		h.handleRAGFlowExportPublish(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/moegirl/build-publish"):
 		h.handleBuildAndPublishMoegirlSummary(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/build-publish"):
@@ -248,21 +239,21 @@ const adminPageHTML = `<!doctype html>
   </section>
 
   <section>
-    <h2>RAGFlow 知识包发布</h2>
-    <p class="muted">chunk 创建、文档解析和人工审核统一在 RAGFlow 中完成；这里仅负责 dry-run、质量门禁、签名打包和发布 latest。</p>
+    <h2>WeKnora 知识包发布</h2>
+    <p class="muted">chunk 创建、文档解析和人工审核在 WeKnora 中完成；这里接收已审核的 WeKnora 导出 payload，负责 dry-run、质量门禁、签名打包和发布 latest。</p>
     <div class="grid">
-      <label>RAGFlow URL <input id="ragflowURL" value="https://rag.yi-flow.com" readonly></label>
-      <label>RAGFlow dataset ID <input id="ragflowDatasetID" value="yi-flow-core"></label>
-      <label>Version <input id="ragflowVersion" placeholder="2026.06.25.001"></label>
-      <label>LLM recommended <input id="ragflowLLM" value="Qwen3-4B-Q4_K_M"></label>
+      <label>Version <input id="weknoraVersion" placeholder="2026.06.25.001"></label>
+      <label>LLM recommended <input id="weknoraLLM" value="Qwen3-4B-Q4_K_M"></label>
     </div>
-    <button id="nextRagflowVersion" class="secondary">生成今日版本号</button>
-    <button id="dryRunRagflowExport" class="secondary">Dry-run 导出与质量门禁</button>
-    <button id="publishRagflowExport">通过门禁后发布 latest</button>
-    <p id="ragflowStatus" class="muted">Exporter status: idle</p>
+    <label>Reviewed WeKnora export JSON <textarea id="weknoraExportJSON" spellcheck="false"></textarea></label>
+    <button id="fillWeKnoraExportTemplate" class="secondary" type="button">填充 reviewed export 示例</button>
+    <button id="nextWeKnoraVersion" class="secondary" type="button">生成今日版本号</button>
+    <button id="dryRunWeKnoraExport" class="secondary" type="button">Dry-run 导出与质量门禁</button>
+    <button id="publishWeKnoraExport" type="button">通过门禁后发布 latest</button>
+    <p id="weknoraStatus" class="muted">Exporter status: idle</p>
     <div class="grid">
-      <p class="muted">最近导出版本：<strong id="lastRagflowExportVersion">-</strong></p>
-      <p class="muted">最近质量门禁：<strong id="lastRagflowQualityGate">-</strong></p>
+      <p class="muted">最近导出版本：<strong id="lastWeKnoraExportVersion">-</strong></p>
+      <p class="muted">最近质量门禁：<strong id="lastWeKnoraQualityGate">-</strong></p>
     </div>
   </section>
 
@@ -280,9 +271,6 @@ const adminPageHTML = `<!doctype html>
     <input id="moegirlLimit" type="number" value="50">
     <textarea id="moegirlTitles" spellcheck="false"></textarea>
     <button id="buildMoegirl" type="button"></button>
-    <button id="fillWeKnoraExportTemplate" type="button"></button>
-    <textarea id="weknoraExportJSON" spellcheck="false"></textarea>
-    <button id="publishWeKnoraExport" type="button"></button>
   </div>
 
   <section>
@@ -361,12 +349,12 @@ const localRagStatus = document.querySelector("#localRagStatus");
 const remoteRagStatus = document.querySelector("#remoteRagStatus");
 const localRagChunks = document.querySelector("#localRagChunks");
 const remoteRagChunks = document.querySelector("#remoteRagChunks");
-const ragflowStatus = document.querySelector("#ragflowStatus");
-const lastRagflowExportVersion = document.querySelector("#lastRagflowExportVersion");
-const lastRagflowQualityGate = document.querySelector("#lastRagflowQualityGate");
+const weknoraStatus = document.querySelector("#weknoraStatus");
+const lastWeKnoraExportVersion = document.querySelector("#lastWeKnoraExportVersion");
+const lastWeKnoraQualityGate = document.querySelector("#lastWeKnoraQualityGate");
 const servicePrefix = location.pathname.includes("/admin") ? location.pathname.split("/admin")[0] : "";
 let lastPreview = null;
-let lastRagflowDryRun = null;
+let lastWeKnoraDryRun = null;
 tokenInput.value = localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
 const defaultChunks = [
   {
@@ -474,14 +462,18 @@ document.querySelector("#fillWeKnoraExportTemplate").onclick = () => fillWeKnora
 document.querySelector("#nextBuilderVersion").onclick = () => {
   document.querySelector("#builderVersion").value = todayVersion();
 };
-document.querySelector("#nextRagflowVersion").onclick = () => {
-  document.querySelector("#ragflowVersion").value = todayVersion();
+document.querySelector("#nextWeKnoraVersion").onclick = () => {
+  const version = todayVersion();
+  document.querySelector("#weknoraVersion").value = version;
+  const body = parseJSONField("#weknoraExportJSON", defaultWeKnoraExport);
+  body.version = version;
+  document.querySelector("#weknoraExportJSON").value = pretty(body);
 };
-document.querySelector("#dryRunRagflowExport").onclick = async () => {
-  await runRagflowExport("/ragflow/export-dry-run", false);
+document.querySelector("#dryRunWeKnoraExport").onclick = async () => {
+  await runWeKnoraExport("/weknora/export-dry-run", false);
 };
-document.querySelector("#publishRagflowExport").onclick = async () => {
-  await runRagflowExport("/ragflow/export-publish", true);
+document.querySelector("#publishWeKnoraExport").onclick = async () => {
+  await runWeKnoraExport("/weknora/export-publish", true);
 };
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {
@@ -507,18 +499,18 @@ function fillWeKnoraExportTemplate(force) {
   if (force || !document.querySelector("#weknoraExportJSON").value.trim()) {
     const template = { ...defaultWeKnoraExport, version: todayVersion() };
     document.querySelector("#weknoraExportJSON").value = pretty(template);
+    document.querySelector("#weknoraVersion").value = template.version;
   }
 }
-async function runRagflowExport(path, publish) {
+async function runWeKnoraExport(path, publish) {
   try {
-    const body = {
-      version: document.querySelector("#ragflowVersion").value.trim() || todayVersion(),
-      dataset_id: document.querySelector("#ragflowDatasetID").value.trim() || kbID(),
-      llm_recommended: document.querySelector("#ragflowLLM").value.split(",").map((item) => item.trim()).filter(Boolean)
-    };
-    if (publish && (!lastRagflowDryRun || lastRagflowDryRun.version !== body.version || lastRagflowDryRun.dataset_id !== body.dataset_id || lastRagflowDryRun.quality_status !== "passed")) {
-      output.textContent = "请先运行同版本、同 dataset 的 dry-run，并确认质量门禁通过。";
-      ragflowStatus.textContent = "Exporter status: waiting for dry-run";
+    const body = parseJSONField("#weknoraExportJSON", defaultWeKnoraExport);
+    body.version = document.querySelector("#weknoraVersion").value.trim() || body.version || todayVersion();
+    body.llm_recommended = document.querySelector("#weknoraLLM").value.split(",").map((item) => item.trim()).filter(Boolean);
+    document.querySelector("#weknoraExportJSON").value = pretty(body);
+    if (publish && (!lastWeKnoraDryRun || lastWeKnoraDryRun.version !== body.version || lastWeKnoraDryRun.quality_status !== "passed")) {
+      output.textContent = "请先运行同版本 reviewed export 的 dry-run，并确认质量门禁通过。";
+      weknoraStatus.textContent = "Exporter status: waiting for dry-run";
       return;
     }
     const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + path, {
@@ -528,21 +520,21 @@ async function runRagflowExport(path, publish) {
     });
     const text = await showResponse(response);
     if (!response.ok) {
-      ragflowStatus.textContent = "Exporter status: failed";
-      lastRagflowQualityGate.textContent = "failed";
+      weknoraStatus.textContent = "Exporter status: failed";
+      lastWeKnoraQualityGate.textContent = "failed";
       return;
     }
     const decoded = JSON.parse(text);
-    lastRagflowDryRun = decoded;
-    ragflowStatus.textContent = "Exporter status: " + (publish ? "published" : "dry-run passed") + " · " + decoded.chunk_count + " chunks";
-    lastRagflowExportVersion.textContent = decoded.version || body.version;
-    lastRagflowQualityGate.textContent = decoded.quality_status || "passed";
+    lastWeKnoraDryRun = decoded;
+    weknoraStatus.textContent = "Exporter status: " + (publish ? "published" : "dry-run passed") + " · " + decoded.chunk_count + " chunks";
+    lastWeKnoraExportVersion.textContent = decoded.version || body.version;
+    lastWeKnoraQualityGate.textContent = decoded.quality_status || "passed";
     document.querySelector("#previewVersion").value = decoded.version || body.version;
     document.querySelector("#rollbackVersion").value = decoded.version || body.version;
   } catch (error) {
-    ragflowStatus.textContent = "Exporter status: failed";
-    lastRagflowQualityGate.textContent = "failed";
-    output.textContent = "RAGFlow 导出失败：\n" + String(error);
+    weknoraStatus.textContent = "Exporter status: failed";
+    lastWeKnoraQualityGate.textContent = "failed";
+    output.textContent = "WeKnora 导出失败：\n" + String(error);
   }
 }
 document.querySelector("#buildPublish").onclick = async () => {
@@ -572,25 +564,6 @@ document.querySelector("#buildPublish").onclick = async () => {
     }
   } catch (error) {
     output.textContent = "构建发布失败：\n" + String(error);
-  }
-};
-document.querySelector("#publishWeKnoraExport").onclick = async () => {
-  try {
-    const body = parseJSONField("#weknoraExportJSON", defaultWeKnoraExport);
-    const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/weknora/export-publish", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    const text = await showResponse(response);
-    if (response.ok) {
-      const decoded = JSON.parse(text);
-      document.querySelector("#previewVersion").value = decoded.version;
-      document.querySelector("#rollbackVersion").value = decoded.version;
-      fillWeKnoraExportTemplate(true);
-    }
-  } catch (error) {
-    output.textContent = "WeKnora 导出发布失败：\n" + String(error);
   }
 };
 document.querySelector("#buildMoegirl").onclick = async () => {

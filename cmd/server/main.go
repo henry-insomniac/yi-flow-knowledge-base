@@ -43,12 +43,6 @@ func main() {
 			TopKMax:            intFromEnv("RAG_GATEWAY_TOP_K_MAX", 8),
 			AuditLog:           os.Stdout,
 		},
-		RAGFlow: server.RAGFlowOptions{
-			BaseURL:  os.Getenv("RAGFLOW_BASE_URL"),
-			APIKey:   os.Getenv("RAGFLOW_API_KEY"),
-			Timeout:  durationFromEnv("RAGFLOW_TIMEOUT", 15*time.Second),
-			PageSize: intFromEnv("RAGFLOW_PAGE_SIZE", 100),
-		},
 	})
 	if err != nil {
 		log.Fatalf("create handler: %v", err)

@@ -525,12 +525,23 @@ func TestAdminCanExportReviewedWeKnoraChunksAndPublishKnowledgePack(t *testing.T
 		Latest        bool   `json:"latest"`
 		ChunkCount    int    `json:"chunk_count"`
 		CitationCount int    `json:"citation_count"`
+		QualityStatus string `json:"quality_status"`
+		QualityReport struct {
+			Status string `json:"status"`
+			Checks []struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+			} `json:"checks"`
+		} `json:"quality_report"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &publishResult); err != nil {
 		t.Fatalf("decode publish result: %v", err)
 	}
 	if publishResult.KBID != "weknora-smoke" || publishResult.Version != "2026.06.22.weknora" || !publishResult.Latest || publishResult.ChunkCount != 1 || publishResult.CitationCount != 1 {
 		t.Fatalf("publish result = %+v", publishResult)
+	}
+	if publishResult.QualityStatus != "passed" || publishResult.QualityReport.Status != "passed" || len(publishResult.QualityReport.Checks) < 4 {
+		t.Fatalf("publish quality report = %+v", publishResult.QualityReport)
 	}
 
 	previewResponse := httptest.NewRecorder()
@@ -577,6 +588,80 @@ func TestAdminCanExportReviewedWeKnoraChunksAndPublishKnowledgePack(t *testing.T
 	}
 }
 
+func TestAdminCanDryRunWeKnoraExportWithoutPublishingLatest(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/weknora-smoke/weknora/export-dry-run", bytes.NewBufferString(`{
+	  "version": "2026.06.25.weknora-dry-run",
+	  "source": "Tencent WeKnora",
+	  "license": "reviewed internal knowledge",
+	  "source_policy": "reviewed chunks only",
+	  "chunks": [
+	    {
+	      "id": "chunk-dry-run-001",
+	      "content": "dry-run 只构建并审计，不更新 latest。",
+	      "knowledge_id": "doc-dry-run",
+	      "knowledge_title": "WeKnora dry-run",
+	      "knowledge_filename": "weknora/dry-run.md",
+	      "knowledge_source": "manual-review",
+	      "metadata": {"url": "https://yi-flow.com/weknora/dry-run"},
+	      "reviewed": true
+	    }
+	  ]
+	}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dry-run status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var dryRun struct {
+		KBID          string `json:"kb_id"`
+		Version       string `json:"version"`
+		Latest        bool   `json:"latest"`
+		ChunkCount    int    `json:"chunk_count"`
+		CitationCount int    `json:"citation_count"`
+		PackageHash   string `json:"package_hash"`
+		QualityStatus string `json:"quality_status"`
+		QualityReport struct {
+			Status string `json:"status"`
+			Checks []struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+			} `json:"checks"`
+		} `json:"quality_report"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &dryRun); err != nil {
+		t.Fatalf("decode dry-run result: %v", err)
+	}
+	if dryRun.KBID != "weknora-smoke" || dryRun.Version != "2026.06.25.weknora-dry-run" || dryRun.Latest || dryRun.ChunkCount != 1 || dryRun.CitationCount != 1 || !strings.HasPrefix(dryRun.PackageHash, "sha256:") {
+		t.Fatalf("dry-run result = %+v", dryRun)
+	}
+	if dryRun.QualityStatus != "passed" || dryRun.QualityReport.Status != "passed" || len(dryRun.QualityReport.Checks) < 4 {
+		t.Fatalf("dry-run quality report = %+v", dryRun.QualityReport)
+	}
+
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, httptest.NewRequest("GET", "/kb/weknora-smoke/latest/preview", nil))
+	if previewResponse.Code != http.StatusNotFound {
+		t.Fatalf("dry-run should not publish latest, preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+}
+
 func TestAdminWeKnoraExportRejectsUnreviewedChunks(t *testing.T) {
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -605,522 +690,6 @@ func TestAdminWeKnoraExportRejectsUnreviewedChunks(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "reviewed must be true") {
 		t.Fatalf("unreviewed export should explain review gate: %s", response.Body.String())
-	}
-}
-
-func TestAdminCanExportRAGFlowDatasetToSignedKnowledgePack(t *testing.T) {
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate signing key: %v", err)
-	}
-
-	var requestedPaths []string
-	ragflow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer test-ragflow-key" {
-			t.Fatalf("ragflow authorization header = %q", r.Header.Get("Authorization"))
-		}
-		requestedPaths = append(requestedPaths, r.URL.Path+"?"+r.URL.RawQuery)
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/datasets/dataset-core/documents":
-			_, _ = io.WriteString(w, `{
-			  "code": 0,
-			  "data": {
-			    "total": 2,
-			    "docs": [
-			      {
-			        "id": "doc-runtime",
-			        "name": "runtime.md",
-			        "location": "yi-flow/core/runtime.md",
-			        "meta_fields": {
-			          "title": "Agent Runtime",
-			          "source_family": "yi-flow-core",
-			          "source_url": "https://yi-flow.com/docs/runtime",
-			          "license": "reviewed internal knowledge",
-			          "review_status": "reviewed"
-			        }
-			      },
-			      {
-			        "id": "doc-pack",
-			        "name": "pack.md",
-			        "location": "yi-flow/core/pack.md",
-			        "meta_fields": {
-			          "source_family": "yi-flow-core",
-			          "source_url": "https://yi-flow.com/docs/pack",
-			          "license": "reviewed internal knowledge",
-			          "review_status": "reviewed"
-			        }
-			      }
-			    ]
-			  }
-			}`)
-		case "/api/v1/datasets/dataset-core/documents/doc-runtime/chunks":
-			_, _ = io.WriteString(w, `{
-			  "code": 0,
-			  "data": {
-			    "total": 2,
-			    "chunks": [
-			      {
-			        "id": "chunk-runtime-001",
-			        "content": "AgentRuntime 根据用户输入选择知识检索、能力调用或普通问答路径。",
-			        "document_id": "doc-runtime",
-			        "docnm_kwd": "runtime.md",
-			        "available": true,
-			        "important_keywords": ["AgentRuntime", "路由"],
-			        "questions": ["AgentRuntime 如何选择路径？"],
-			        "tag_kwd": ["runtime"]
-			      },
-			      {
-			        "id": "chunk-runtime-002",
-			        "content": "Hybrid RAG 优先使用远程检索，失败后回退到本地 Knowledge Pack。",
-			        "document_id": "doc-runtime",
-			        "docnm_kwd": "runtime.md",
-			        "available": true,
-			        "important_keywords": ["Hybrid RAG", "fallback"],
-			        "questions": ["Hybrid RAG 如何回退？"]
-			      }
-			    ]
-			  }
-			}`)
-		case "/api/v1/datasets/dataset-core/documents/doc-pack/chunks":
-			_, _ = io.WriteString(w, `{
-			  "code": 0,
-			  "data": {
-			    "total": 1,
-			    "chunks": [
-			      {
-			        "id": "chunk-pack-001",
-			        "content": "Knowledge Pack 发布后生成 manifest.json、knowledge-pack.zip、chunks.sqlite、citations.json 和 prompts.json。",
-			        "document_id": "doc-pack",
-			        "docnm_kwd": "pack.md",
-			        "available": true,
-			        "important_keywords": ["Knowledge Pack", "manifest"]
-			      }
-			    ]
-			  }
-			}`)
-		default:
-			t.Fatalf("unexpected ragflow path: %s", r.URL.String())
-		}
-	}))
-	defer ragflow.Close()
-
-	handler, err := server.NewHandler(server.Options{
-		StorageDir:               t.TempDir(),
-		AdminToken:               "test-admin-token",
-		KnowledgePackSigningSeed: privateKey.Seed(),
-		RAGFlow: server.RAGFlowOptions{
-			BaseURL: ragflow.URL,
-			APIKey:  "test-ragflow-key",
-		},
-	})
-	if err != nil {
-		t.Fatalf("new handler: %v", err)
-	}
-
-	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/ragflow/export-publish", bytes.NewBufferString(`{
-	  "version": "2026.06.25.ragflow",
-	  "dataset_id": "dataset-core",
-	  "llm_recommended": ["Qwen3-4B-Q4_K_M"]
-	}`))
-	request.Header.Set("Authorization", "Bearer test-admin-token")
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("ragflow export status=%d body=%s paths=%v", response.Code, response.Body.String(), requestedPaths)
-	}
-
-	var publishResult struct {
-		KBID          string `json:"kb_id"`
-		Version       string `json:"version"`
-		Latest        bool   `json:"latest"`
-		ChunkCount    int    `json:"chunk_count"`
-		CitationCount int    `json:"citation_count"`
-		DatasetID     string `json:"dataset_id"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &publishResult); err != nil {
-		t.Fatalf("decode publish result: %v", err)
-	}
-	if publishResult.KBID != "yi-flow-core" || publishResult.Version != "2026.06.25.ragflow" || !publishResult.Latest || publishResult.ChunkCount != 3 || publishResult.CitationCount != 3 || publishResult.DatasetID != "dataset-core" {
-		t.Fatalf("publish result = %+v", publishResult)
-	}
-
-	previewResponse := httptest.NewRecorder()
-	handler.ServeHTTP(previewResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/latest/preview?limit=5", nil))
-	if previewResponse.Code != http.StatusOK {
-		t.Fatalf("preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
-	}
-	previewBody := previewResponse.Body.String()
-	for _, expected := range []string{"ragflow:dataset-core:chunk-runtime-001", "AgentRuntime 如何选择路径？", "https://yi-flow.com/docs/runtime", "reviewed internal knowledge"} {
-		if !strings.Contains(previewBody, expected) {
-			t.Fatalf("preview missing %q: %s", expected, previewBody)
-		}
-	}
-
-	manifestResponse := httptest.NewRecorder()
-	handler.ServeHTTP(manifestResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/latest/manifest.json", nil))
-	if manifestResponse.Code != http.StatusOK {
-		t.Fatalf("manifest status=%d body=%s", manifestResponse.Code, manifestResponse.Body.String())
-	}
-	var manifest struct {
-		ContentHash string `json:"content_hash"`
-		Signature   string `json:"signature"`
-	}
-	if err := json.Unmarshal(manifestResponse.Body.Bytes(), &manifest); err != nil {
-		t.Fatalf("decode manifest: %v", err)
-	}
-
-	packageResponse := httptest.NewRecorder()
-	handler.ServeHTTP(packageResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/versions/2026.06.25.ragflow/knowledge-pack.zip", nil))
-	if packageResponse.Code != http.StatusOK {
-		t.Fatalf("package status=%d body=%s", packageResponse.Code, packageResponse.Body.String())
-	}
-	digest := sha256.Sum256(packageResponse.Body.Bytes())
-	if manifest.ContentHash != "sha256:"+hex.EncodeToString(digest[:]) {
-		t.Fatalf("content_hash=%s digest=%x", manifest.ContentHash, digest)
-	}
-	signature := strings.TrimPrefix(manifest.Signature, "ed25519:")
-	if !ed25519.Verify(publicKey, digest[:], mustBase64(t, signature)) {
-		t.Fatalf("manifest signature does not verify")
-	}
-	packageBody := packageResponse.Body.String()
-	for _, expected := range []string{"chunk-runtime-001", "chunk-runtime-002", "chunk-pack-001", "Knowledge Pack"} {
-		if !strings.Contains(packageBody, expected) {
-			t.Fatalf("package missing %q", expected)
-		}
-	}
-}
-
-func TestAdminRAGFlowExportRejectsChunksMissingRequiredMetadata(t *testing.T) {
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate signing key: %v", err)
-	}
-
-	ragflow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/datasets/dataset-core/documents":
-			_, _ = io.WriteString(w, `{
-			  "code": 0,
-			  "data": {
-			    "total": 1,
-			    "docs": [{
-			      "id": "doc-runtime",
-			      "name": "runtime.md",
-			      "meta_fields": {
-			        "source_family": "yi-flow-core",
-			        "source_url": "https://yi-flow.com/docs/runtime",
-			        "review_status": "reviewed"
-			      }
-			    }]
-			  }
-			}`)
-		case "/api/v1/datasets/dataset-core/documents/doc-runtime/chunks":
-			_, _ = io.WriteString(w, `{
-			  "code": 0,
-			  "data": {
-			    "total": 1,
-			    "chunks": [{
-			      "id": "chunk-runtime-001",
-			      "content": "缺少 license 的 RAGFlow chunk 不允许发布。",
-			      "available": true
-			    }]
-			  }
-			}`)
-		default:
-			t.Fatalf("unexpected ragflow path: %s", r.URL.String())
-		}
-	}))
-	defer ragflow.Close()
-
-	handler, err := server.NewHandler(server.Options{
-		StorageDir:               t.TempDir(),
-		AdminToken:               "test-admin-token",
-		KnowledgePackSigningSeed: privateKey.Seed(),
-		RAGFlow: server.RAGFlowOptions{
-			BaseURL: ragflow.URL,
-			APIKey:  "test-ragflow-key",
-		},
-	})
-	if err != nil {
-		t.Fatalf("new handler: %v", err)
-	}
-
-	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/ragflow/export-publish", bytes.NewBufferString(`{
-	  "version": "2026.06.25.ragflow",
-	  "dataset_id": "dataset-core"
-	}`))
-	request.Header.Set("Authorization", "Bearer test-admin-token")
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("missing metadata status=%d body=%s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), "license is required") {
-		t.Fatalf("missing metadata error should mention license: %s", response.Body.String())
-	}
-}
-
-func TestAdminRAGFlowExportRejectsDuplicateChunkIDs(t *testing.T) {
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate signing key: %v", err)
-	}
-
-	ragflow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/datasets/dataset-core/documents":
-			_, _ = io.WriteString(w, `{
-			  "code": 0,
-			  "data": {
-			    "total": 2,
-			    "docs": [
-			      {
-			        "id": "doc-a",
-			        "name": "a.md",
-			        "meta_fields": {
-			          "source_family": "yi-flow-core",
-			          "source_url": "https://yi-flow.com/docs/a",
-			          "license": "reviewed internal knowledge",
-			          "review_status": "reviewed"
-			        }
-			      },
-			      {
-			        "id": "doc-b",
-			        "name": "b.md",
-			        "meta_fields": {
-			          "source_family": "yi-flow-core",
-			          "source_url": "https://yi-flow.com/docs/b",
-			          "license": "reviewed internal knowledge",
-			          "review_status": "reviewed"
-			        }
-			      }
-			    ]
-			  }
-			}`)
-		case "/api/v1/datasets/dataset-core/documents/doc-a/chunks", "/api/v1/datasets/dataset-core/documents/doc-b/chunks":
-			_, _ = io.WriteString(w, `{
-			  "code": 0,
-			  "data": {
-			    "total": 1,
-			    "chunks": [{
-			      "id": "duplicate-chunk",
-			      "content": "重复 chunk ID 不能进入签名知识包。",
-			      "available": true
-			    }]
-			  }
-			}`)
-		default:
-			t.Fatalf("unexpected ragflow path: %s", r.URL.String())
-		}
-	}))
-	defer ragflow.Close()
-
-	handler, err := server.NewHandler(server.Options{
-		StorageDir:               t.TempDir(),
-		AdminToken:               "test-admin-token",
-		KnowledgePackSigningSeed: privateKey.Seed(),
-		RAGFlow: server.RAGFlowOptions{
-			BaseURL: ragflow.URL,
-			APIKey:  "test-ragflow-key",
-		},
-	})
-	if err != nil {
-		t.Fatalf("new handler: %v", err)
-	}
-
-	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/ragflow/export-publish", bytes.NewBufferString(`{
-	  "version": "2026.06.25.ragflow",
-	  "dataset_id": "dataset-core"
-	}`))
-	request.Header.Set("Authorization", "Bearer test-admin-token")
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("duplicate chunk status=%d body=%s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), "duplicates exported chunk_id") {
-		t.Fatalf("duplicate chunk error should explain collision: %s", response.Body.String())
-	}
-}
-
-func TestAdminRAGFlowExportRejectsYiFlowCoreChunksInMoegirlPack(t *testing.T) {
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate signing key: %v", err)
-	}
-
-	ragflow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/datasets/dataset-moegirl/documents":
-			_, _ = io.WriteString(w, `{
-			  "code": 0,
-			  "data": {
-			    "total": 1,
-			    "docs": [{
-			      "id": "doc-core",
-			      "name": "core.md",
-			      "meta_fields": {
-			        "source_family": "yi-flow-core",
-			        "source_url": "https://yi-flow.com/docs/core",
-			        "license": "reviewed internal knowledge",
-			        "review_status": "reviewed"
-			      }
-			    }]
-			  }
-			}`)
-		case "/api/v1/datasets/dataset-moegirl/documents/doc-core/chunks":
-			_, _ = io.WriteString(w, `{
-			  "code": 0,
-			  "data": {
-			    "total": 1,
-			    "chunks": [{
-			      "id": "chunk-core-001",
-			      "content": "yi-flow-core 内容不能进入 Moegirl FAQ 知识包。",
-			      "available": true
-			    }]
-			  }
-			}`)
-		default:
-			t.Fatalf("unexpected ragflow path: %s", r.URL.String())
-		}
-	}))
-	defer ragflow.Close()
-
-	handler, err := server.NewHandler(server.Options{
-		StorageDir:               t.TempDir(),
-		AdminToken:               "test-admin-token",
-		KnowledgePackSigningSeed: privateKey.Seed(),
-		RAGFlow: server.RAGFlowOptions{
-			BaseURL: ragflow.URL,
-			APIKey:  "test-ragflow-key",
-		},
-	})
-	if err != nil {
-		t.Fatalf("new handler: %v", err)
-	}
-
-	request := httptest.NewRequest("POST", "/admin/api/kb/moegirl-acgn-faq/ragflow/export-publish", bytes.NewBufferString(`{
-	  "version": "2026.06.25.ragflow",
-	  "dataset_id": "dataset-moegirl"
-	}`))
-	request.Header.Set("Authorization", "Bearer test-admin-token")
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("moegirl contamination status=%d body=%s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), "rejects yi_flow source family") {
-		t.Fatalf("moegirl contamination error should explain source boundary: %s", response.Body.String())
-	}
-}
-
-func TestAdminCanDryRunRAGFlowExportWithoutPublishingLatest(t *testing.T) {
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate signing key: %v", err)
-	}
-
-	ragflow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/datasets/dataset-core/documents":
-			_, _ = io.WriteString(w, `{
-			  "code": 0,
-			  "data": {
-			    "total": 1,
-			    "docs": [{
-			      "id": "doc-runtime",
-			      "name": "runtime.md",
-			      "location": "yi-flow/core/runtime.md",
-			      "meta_fields": {
-			        "source_family": "yi-flow-core",
-			        "source_url": "https://yi-flow.com/docs/runtime",
-			        "license": "reviewed internal knowledge",
-			        "review_status": "reviewed"
-			      }
-			    }]
-			  }
-			}`)
-		case "/api/v1/datasets/dataset-core/documents/doc-runtime/chunks":
-			_, _ = io.WriteString(w, `{
-			  "code": 0,
-			  "data": {
-			    "total": 1,
-			    "chunks": [{
-			      "id": "chunk-runtime-001",
-			      "content": "dry-run 只构建并审计，不更新 latest。",
-			      "available": true
-			    }]
-			  }
-			}`)
-		default:
-			t.Fatalf("unexpected ragflow path: %s", r.URL.String())
-		}
-	}))
-	defer ragflow.Close()
-
-	handler, err := server.NewHandler(server.Options{
-		StorageDir:               t.TempDir(),
-		AdminToken:               "test-admin-token",
-		KnowledgePackSigningSeed: privateKey.Seed(),
-		RAGFlow: server.RAGFlowOptions{
-			BaseURL: ragflow.URL,
-			APIKey:  "test-ragflow-key",
-		},
-	})
-	if err != nil {
-		t.Fatalf("new handler: %v", err)
-	}
-
-	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/ragflow/export-dry-run", bytes.NewBufferString(`{
-	  "version": "2026.06.25.ragflow",
-	  "dataset_id": "dataset-core"
-	}`))
-	request.Header.Set("Authorization", "Bearer test-admin-token")
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("dry-run status=%d body=%s", response.Code, response.Body.String())
-	}
-	var dryRun struct {
-		KBID          string `json:"kb_id"`
-		Version       string `json:"version"`
-		Latest        bool   `json:"latest"`
-		ChunkCount    int    `json:"chunk_count"`
-		CitationCount int    `json:"citation_count"`
-		PackageHash   string `json:"package_hash"`
-		QualityStatus string `json:"quality_status"`
-		QualityReport struct {
-			Status string `json:"status"`
-			Checks []struct {
-				Name   string `json:"name"`
-				Status string `json:"status"`
-			} `json:"checks"`
-		} `json:"quality_report"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &dryRun); err != nil {
-		t.Fatalf("decode dry-run result: %v", err)
-	}
-	if dryRun.KBID != "yi-flow-core" || dryRun.Version != "2026.06.25.ragflow" || dryRun.Latest || dryRun.ChunkCount != 1 || dryRun.CitationCount != 1 || dryRun.QualityStatus != "passed" || !strings.HasPrefix(dryRun.PackageHash, "sha256:") {
-		t.Fatalf("dry-run result = %+v", dryRun)
-	}
-	if dryRun.QualityReport.Status != "passed" || len(dryRun.QualityReport.Checks) < 4 {
-		t.Fatalf("dry-run quality report = %+v", dryRun.QualityReport)
-	}
-
-	previewResponse := httptest.NewRecorder()
-	handler.ServeHTTP(previewResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/latest/preview?limit=5", nil))
-	if previewResponse.Code != http.StatusNotFound {
-		t.Fatalf("dry-run should not publish latest, preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
 	}
 }
 
@@ -1226,17 +795,19 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	if !bytes.Contains(response.Body.Bytes(), []byte("/preview")) {
 		t.Fatalf("admin page missing preview api usage")
 	}
-	if !bytes.Contains(response.Body.Bytes(), []byte("RAGFlow 知识包发布")) {
-		t.Fatalf("admin page missing RAGFlow publisher")
+	if !bytes.Contains(response.Body.Bytes(), []byte("WeKnora 知识包发布")) {
+		t.Fatalf("admin page missing WeKnora publisher")
 	}
-	if !bytes.Contains(response.Body.Bytes(), []byte("https://rag.yi-flow.com")) {
-		t.Fatalf("admin page missing RAGFlow URL handoff")
+	if !bytes.Contains(response.Body.Bytes(), []byte("/weknora/export-dry-run")) {
+		t.Fatalf("admin page missing WeKnora dry-run api usage")
 	}
-	if !bytes.Contains(response.Body.Bytes(), []byte("/ragflow/export-dry-run")) {
-		t.Fatalf("admin page missing RAGFlow dry-run api usage")
+	if !bytes.Contains(response.Body.Bytes(), []byte("/weknora/export-publish")) {
+		t.Fatalf("admin page missing WeKnora publish api usage")
 	}
-	if !bytes.Contains(response.Body.Bytes(), []byte("/ragflow/export-publish")) {
-		t.Fatalf("admin page missing RAGFlow publish api usage")
+	for _, removed := range []string{"RAGFlow 知识包发布", "https://rag.yi-flow.com", "/ragflow/export-dry-run", "/ragflow/export-publish"} {
+		if bytes.Contains(response.Body.Bytes(), []byte(removed)) {
+			t.Fatalf("admin page should not expose RAGFlow primary path %q", removed)
+		}
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("最近导出版本")) {
 		t.Fatalf("admin page missing last export version status")

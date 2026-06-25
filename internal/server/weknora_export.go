@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -61,70 +63,162 @@ type weknoraExportCitation struct {
 	ReviewStatus string  `json:"review_status"`
 }
 
-func (h *Handler) handleWeKnoraExportPublish(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+type preparedWeKnoraExport struct {
+	KBID          string
+	Version       string
+	BuildPayload  buildPublishRequest
+	PackageBytes  []byte
+	Manifest      []byte
+	CitationCount int
+}
+
+type weknoraQualityReport struct {
+	Status  string                    `json:"status"`
+	Checks  []weknoraQualityCheck     `json:"checks"`
+	Metrics map[string]int            `json:"metrics"`
+	Sources map[string]map[string]int `json:"sources,omitempty"`
+}
+
+type weknoraQualityCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+func (h *Handler) handleWeKnoraExportDryRun(w http.ResponseWriter, r *http.Request) {
+	prepared, status, err := h.prepareWeKnoraExport(r, "/weknora/export-dry-run")
+	if err != nil {
+		http.Error(w, err.Error(), status)
 		return
 	}
-	if len(h.knowledgePackSigningSeed) == 0 {
-		http.Error(w, "knowledge pack signing key is not configured", http.StatusServiceUnavailable)
+	digest := sha256.Sum256(prepared.PackageBytes)
+	qualityReport := weknoraQualityReportFor(prepared)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kb_id":          prepared.KBID,
+		"version":        prepared.Version,
+		"latest":         false,
+		"chunk_count":    len(prepared.BuildPayload.Chunks),
+		"citation_count": prepared.CitationCount,
+		"package_hash":   "sha256:" + hex.EncodeToString(digest[:]),
+		"quality_status": qualityReport.Status,
+		"quality_report": qualityReport,
+	})
+}
+
+func (h *Handler) handleWeKnoraExportPublish(w http.ResponseWriter, r *http.Request) {
+	prepared, status, err := h.prepareWeKnoraExport(r, "/weknora/export-publish")
+	if err != nil {
+		http.Error(w, err.Error(), status)
 		return
+	}
+	if err := h.storePublishedVersion(prepared.KBID, prepared.Version, prepared.Manifest, bytes.NewReader(prepared.PackageBytes)); err != nil {
+		writePublishError(w, err)
+		return
+	}
+	qualityReport := weknoraQualityReportFor(prepared)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"kb_id":          prepared.KBID,
+		"version":        prepared.Version,
+		"latest":         true,
+		"chunk_count":    len(prepared.BuildPayload.Chunks),
+		"citation_count": prepared.CitationCount,
+		"source":         defaultWeKnoraExportSource,
+		"quality_status": qualityReport.Status,
+		"quality_report": qualityReport,
+	})
+}
+
+func (h *Handler) prepareWeKnoraExport(r *http.Request, suffix string) (preparedWeKnoraExport, int, error) {
+	if !h.authorized(r) {
+		return preparedWeKnoraExport{}, http.StatusUnauthorized, fmt.Errorf("unauthorized")
+	}
+	if len(h.knowledgePackSigningSeed) == 0 {
+		return preparedWeKnoraExport{}, http.StatusServiceUnavailable, fmt.Errorf("knowledge pack signing key is not configured")
 	}
 
 	kbID, ok := strings.CutPrefix(r.URL.Path, "/admin/api/kb/")
 	if !ok {
-		http.NotFound(w, r)
-		return
+		return preparedWeKnoraExport{}, http.StatusNotFound, fmt.Errorf("not found")
 	}
-	kbID, ok = strings.CutSuffix(kbID, "/weknora/export-publish")
+	kbID, ok = strings.CutSuffix(kbID, suffix)
 	if !ok {
-		http.NotFound(w, r)
-		return
+		return preparedWeKnoraExport{}, http.StatusNotFound, fmt.Errorf("not found")
 	}
 	kbID, err := safeComponent(kbID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return preparedWeKnoraExport{}, http.StatusBadRequest, err
 	}
 
 	var payload weknoraExportPublishRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20)).Decode(&payload); err != nil {
-		http.Error(w, "invalid json body", http.StatusBadRequest)
-		return
+	if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 8<<20)).Decode(&payload); err != nil {
+		return preparedWeKnoraExport{}, http.StatusBadRequest, fmt.Errorf("invalid json body")
 	}
 
 	version, err := safeComponent(payload.Version)
 	if err != nil {
-		http.Error(w, "invalid version", http.StatusBadRequest)
-		return
+		return preparedWeKnoraExport{}, http.StatusBadRequest, fmt.Errorf("invalid version")
 	}
 
 	buildPayload, citationCount, err := weknoraExportBuildPayload(payload)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return preparedWeKnoraExport{}, http.StatusBadRequest, err
 	}
 	buildPayload.Version = version
 	buildPayload.LLMRecommended = payload.LLMRecommended
 
-	packageBytes, manifest, err := buildKnowledgePack(kbID, version, buildPayload, h.knowledgePackSigningSeed)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := h.storePublishedVersion(kbID, version, manifest, bytes.NewReader(packageBytes)); err != nil {
-		writePublishError(w, err)
-		return
+	if err := validateBuildPublishBoundary(kbID, buildPayload); err != nil {
+		return preparedWeKnoraExport{}, http.StatusBadRequest, err
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"kb_id":          kbID,
-		"version":        version,
-		"latest":         true,
-		"chunk_count":    len(buildPayload.Chunks),
-		"citation_count": citationCount,
-		"source":         resolvedWeKnoraExportSource(payload),
-	})
+	packageBytes, manifest, err := buildKnowledgePack(kbID, version, buildPayload, h.knowledgePackSigningSeed)
+	if err != nil {
+		return preparedWeKnoraExport{}, http.StatusBadRequest, err
+	}
+	if err := auditKnowledgePackBeforePublish(manifest, packageBytes); err != nil {
+		return preparedWeKnoraExport{}, http.StatusBadRequest, err
+	}
+
+	return preparedWeKnoraExport{
+		KBID:          kbID,
+		Version:       version,
+		BuildPayload:  buildPayload,
+		PackageBytes:  packageBytes,
+		Manifest:      manifest,
+		CitationCount: citationCount,
+	}, http.StatusOK, nil
+}
+
+func weknoraQualityReportFor(prepared preparedWeKnoraExport) weknoraQualityReport {
+	return weknoraQualityReport{
+		Status: "passed",
+		Checks: []weknoraQualityCheck{
+			{Name: "review_status", Status: "passed"},
+			{Name: "required_chunk_fields", Status: "passed"},
+			{Name: "citation_metadata", Status: "passed"},
+			{Name: "duplicate_chunk_ids", Status: "passed"},
+			{Name: "source_boundary", Status: "passed"},
+			{Name: "package_audit", Status: "passed"},
+		},
+		Metrics: map[string]int{
+			"chunk_count":    len(prepared.BuildPayload.Chunks),
+			"citation_count": prepared.CitationCount,
+			"prompt_count":   len(prepared.BuildPayload.Prompts),
+		},
+		Sources: map[string]map[string]int{
+			"chunks": weknoraChunkSources(prepared.BuildPayload.Chunks),
+		},
+	}
+}
+
+func weknoraChunkSources(chunks []knowledgePackBuildChunk) map[string]int {
+	result := map[string]int{}
+	for _, chunk := range chunks {
+		source := strings.TrimSpace(chunk.Source)
+		if source == "" {
+			source = "unknown"
+		}
+		result[source]++
+	}
+	return result
 }
 
 func weknoraExportBuildPayload(payload weknoraExportPublishRequest) (buildPublishRequest, int, error) {
