@@ -2,6 +2,9 @@ package server
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +14,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
+
+const adminSessionCookieName = "yi_flow_kb_admin_session"
 
 type Options struct {
 	StorageDir                 string
@@ -70,6 +76,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleRAGQuery(w, r)
 	case r.Method == http.MethodGet && (r.URL.Path == "/admin" || r.URL.Path == "/admin/"):
 		h.handleAdminPage(w, r)
+	case (r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodDelete) && r.URL.Path == "/admin/api/session":
+		h.handleAdminSession(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/source-audit"):
 		h.handleDraftSourceAudit(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/moegirl-review"):
@@ -158,6 +166,37 @@ func defaultString(value string, fallback string) string {
 func (h *Handler) handleAdminPage(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, adminPageHTML)
+}
+
+func (h *Handler) handleAdminSession(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	switch r.Method {
+	case http.MethodGet:
+		if !h.authorized(r) {
+			http.Error(w, `{"authenticated":false}`, http.StatusUnauthorized)
+			return
+		}
+		_, _ = io.WriteString(w, `{"authenticated":true}`)
+	case http.MethodPost:
+		var request struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid login payload", http.StatusBadRequest)
+			return
+		}
+		if h.adminToken != "" && request.Token != h.adminToken {
+			http.Error(w, "invalid admin password", http.StatusUnauthorized)
+			return
+		}
+		h.setAdminSessionCookie(w, r)
+		_, _ = io.WriteString(w, `{"authenticated":true}`)
+	case http.MethodDelete:
+		h.clearAdminSessionCookie(w, r)
+		_, _ = io.WriteString(w, `{"authenticated":false}`)
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 func (h *Handler) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
@@ -426,13 +465,15 @@ const adminPageHTML = `<!doctype html>
   </nav>
 
   <section id="dashboard-config" data-dashboard-category="catalog">
-    <h2>配置</h2>
+    <h2>登录</h2>
+    <p class="muted">使用管理员密码登录后再创建、审核、发布或回滚知识包。密码不会保存到浏览器；登录成功后使用服务端会话。</p>
     <div class="grid">
-      <label>Admin token <input id="token" type="password" autocomplete="off"></label>
+      <label>管理员密码 <input id="adminPassword" type="password" autocomplete="current-password" placeholder="输入管理员密码"></label>
       <label>Knowledge base ID <input id="kbID" value="yi-flow-core"></label>
     </div>
-    <button id="saveToken" class="secondary">保存到本机浏览器</button>
-    <p id="authStatus" class="muted">Admin auth status: token not saved in this browser.</p>
+    <button id="loginAdmin" type="button">登录</button>
+    <button id="logoutAdmin" class="secondary" type="button">退出登录</button>
+    <p id="authStatus" class="muted">未登录。请先登录再操作知识包。</p>
   </section>
 
   <section id="dashboard-create" data-dashboard-category="create">
@@ -670,7 +711,7 @@ const adminPageHTML = `<!doctype html>
   </section>
 </main>
 <script>
-const tokenInput = document.querySelector("#token");
+const tokenInput = document.querySelector("#adminPassword");
 const kbIDInput = document.querySelector("#kbID");
 const output = document.querySelector("#output");
 const authStatus = document.querySelector("#authStatus");
@@ -692,6 +733,7 @@ const draftChunkPageStatus = document.querySelector("#draftChunkPageStatus");
 const draftPromptsList = document.querySelector("#draftPrompts");
 const draftRetrievalResults = document.querySelector("#draftRetrievalResults");
 const servicePrefix = location.pathname.includes("/admin") ? location.pathname.split("/admin")[0] : "";
+const nativeFetch = window.fetch.bind(window);
 let lastPreview = null;
 let lastWeKnoraDryRun = null;
 let selectedDraftChunkID = "";
@@ -700,8 +742,8 @@ let draftDirty = false;
 let draftChunkOffset = 0;
 let draftChunkPreviousOffset = 0;
 let draftChunkNextOffset = -1;
-tokenInput.value = localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
-updateAuthStatus();
+let adminSessionActive = false;
+updateAuthStatus(false);
 const defaultChunks = [
   {
     chunk_id: "topic-001",
@@ -751,12 +793,12 @@ const defaultWeKnoraExport = {
 fillBuilderTemplate(false);
 fillWeKnoraExportTemplate(false);
 fillDraftTemplate(false);
-document.querySelector("#saveToken").onclick = () => {
-  localStorage.setItem("yiFlowKnowledgeAdminToken", tokenInput.value);
-  updateAuthStatus();
-  output.textContent = token() ? "Admin token saved locally." : "Admin token cleared locally.";
-};
-tokenInput.addEventListener("input", updateAuthStatus);
+checkAdminSession();
+document.querySelector("#loginAdmin").onclick = loginAdmin;
+document.querySelector("#logoutAdmin").onclick = logoutAdmin;
+tokenInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") loginAdmin();
+});
 for (const selector of ["#draftChunkID", "#draftChunkTitle", "#draftChunkPath", "#draftChunkSource", "#draftChunkTags", "#draftChunkReviewStatus", "#draftCitationURL", "#draftCitationTitle", "#draftSourceName", "#draftLicense", "#draftSourcePolicy", "#draftSourceRevisionID", "#draftSourcePageID", "#draftChunkContent"]) {
   document.querySelector(selector).addEventListener("input", markDraftDirty);
   document.querySelector(selector).addEventListener("change", markDraftDirty);
@@ -765,24 +807,64 @@ for (const selector of ["#draftPromptID", "#draftPromptTitle", "#draftPromptExpe
   document.querySelector(selector).addEventListener("input", markDraftDirty);
   document.querySelector(selector).addEventListener("change", markDraftDirty);
 }
-function token() { return tokenInput.value || localStorage.getItem("yiFlowKnowledgeAdminToken") || ""; }
-function updateAuthStatus() {
-  const current = tokenInput.value || localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
-  authStatus.textContent = current
-    ? "Admin auth status: token loaded in this browser. Admin operations will send Authorization: Bearer <token>."
-    : "Admin auth status: token missing. Paste the Admin token and click 保存到本机浏览器 before creating, publishing, rolling back, or refreshing admin data.";
+function token() { return tokenInput.value.trim(); }
+function updateAuthStatus(active, message) {
+  adminSessionActive = Boolean(active);
+  authStatus.textContent = message || (adminSessionActive
+    ? "已登录。可以创建、审核、发布和回滚知识包。"
+    : "未登录。输入管理员密码并点击登录。");
 }
-const nativeFetch = window.fetch.bind(window);
+async function checkAdminSession() {
+  const response = await nativeFetch(servicePrefix + "/admin/api/session", { credentials: "same-origin" });
+  updateAuthStatus(response.ok);
+}
+async function loginAdmin() {
+  const password = token();
+  if (!password) {
+    output.textContent = "请输入管理员密码。";
+    updateAuthStatus(false, "未登录。请输入管理员密码。");
+    tokenInput.focus();
+    return;
+  }
+  const response = await nativeFetch(servicePrefix + "/admin/api/session", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: password })
+  });
+  if (!response.ok) {
+    output.textContent = "登录失败：管理员密码不正确。";
+    updateAuthStatus(false, "未登录。管理员密码不正确。");
+    tokenInput.focus();
+    return;
+  }
+  tokenInput.value = "";
+  updateAuthStatus(true, "已登录。可以管理知识包。");
+  output.textContent = "登录成功。";
+}
+async function logoutAdmin() {
+  await nativeFetch(servicePrefix + "/admin/api/session", { method: "DELETE", credentials: "same-origin" });
+  tokenInput.value = "";
+  updateAuthStatus(false, "已退出登录。");
+  output.textContent = "已退出登录。";
+}
 window.fetch = async (resource, options = {}) => {
   const url = typeof resource === "string" ? resource : (resource && resource.url) || "";
-  if (String(url).includes("/admin/api/") && !token()) {
-    const message = "Admin token missing. Paste the Admin token, click 保存到本机浏览器, then retry this operation.";
+  const adminAPI = String(url).includes("/admin/api/");
+  const sessionAPI = String(url).includes("/admin/api/session");
+  if (adminAPI && !sessionAPI && !adminSessionActive) {
+    const message = "请先登录。输入管理员密码并点击登录，然后再执行这个操作。";
     output.textContent = message;
-    updateAuthStatus();
+    updateAuthStatus(false, "未登录。请先登录后再操作知识包。");
     tokenInput.focus();
-    return new Response(message, { status: 401, statusText: "Admin token missing" });
+    return new Response(message, { status: 401, statusText: "Login required" });
   }
-  return nativeFetch(resource, options);
+  const nextOptions = { ...options, credentials: options.credentials || "same-origin" };
+  const response = await nativeFetch(resource, nextOptions);
+  if (adminAPI && !sessionAPI && response.status === 401) {
+    updateAuthStatus(false, "登录已失效。请重新登录。");
+  }
+  return response;
 };
 function kbID() { return kbIDInput.value.trim() || "yi-flow-core"; }
 function moegirlKBID() {
@@ -985,11 +1067,11 @@ function confirmDiscardDraftChanges() {
 async function showResponse(response) {
   const text = await response.text();
   if (response.status === 401) {
-    const message = text.includes("Admin token missing")
+    const message = text.includes("请先登录")
       ? text
-      : "Admin token invalid or missing. Re-enter the Admin token, click 保存到本机浏览器, then retry.";
+      : "登录已失效或管理员密码不正确。请重新登录后再试。";
     output.textContent = "401\n" + message;
-    updateAuthStatus();
+    updateAuthStatus(false, "未登录。请重新登录。");
     tokenInput.focus();
     return text;
   }
@@ -1081,11 +1163,28 @@ document.querySelector("#createDraftChunk").onclick = async () => {
   try {
     const payload = draftChunkPayloadForCreate();
     if (!payload) return;
+    const version = draftVersion();
     const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/chunks", {
       method: "POST",
       headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
+    if (response.status === 404) {
+      const bootstrapResponse = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(version), {
+        method: "PUT",
+        headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+        body: JSON.stringify({ chunks: [payload], prompts: [], citations: defaultCitations })
+      });
+      const bootstrapText = await showResponse(bootstrapResponse);
+      if (!bootstrapResponse.ok) {
+        preserveUnsavedDraftOnError("Draft workspace status: create failed");
+        return;
+      }
+      selectedDraftChunkID = payload.chunk_id;
+      setDraftClean("Draft workspace status: created draft + chunk · " + selectedDraftChunkID);
+      await loadDraftChunkList();
+      return;
+    }
     const text = await showResponse(response);
     if (!response.ok) {
       preserveUnsavedDraftOnError("Draft workspace status: create failed");
@@ -2342,7 +2441,66 @@ func (h *Handler) authorized(r *http.Request) bool {
 	if h.adminToken == "" {
 		return true
 	}
-	return r.Header.Get("Authorization") == "Bearer "+h.adminToken
+	if r.Header.Get("Authorization") == "Bearer "+h.adminToken {
+		return true
+	}
+	return h.validAdminSessionCookie(r)
+}
+
+func (h *Handler) setAdminSessionCookie(w http.ResponseWriter, r *http.Request) {
+	expiresAt := time.Now().Add(12 * time.Hour)
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminSessionCookieName,
+		Value:    h.adminSessionCookieValue(expiresAt),
+		Path:     "/",
+		Expires:  expiresAt,
+		MaxAge:   int(time.Until(expiresAt).Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+	})
+}
+
+func (h *Handler) clearAdminSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminSessionCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+	})
+}
+
+func (h *Handler) validAdminSessionCookie(r *http.Request) bool {
+	cookie, err := r.Cookie(adminSessionCookieName)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(cookie.Value, ".")
+	if len(parts) != 2 {
+		return false
+	}
+	expiresUnix, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || time.Now().After(time.Unix(expiresUnix, 0)) {
+		return false
+	}
+	expected := h.adminSessionCookieValue(time.Unix(expiresUnix, 0))
+	return hmac.Equal([]byte(cookie.Value), []byte(expected))
+}
+
+func (h *Handler) adminSessionCookieValue(expiresAt time.Time) string {
+	payload := strconv.FormatInt(expiresAt.Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(h.adminToken))
+	_, _ = mac.Write([]byte(payload))
+	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return payload + "." + signature
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func (h *Handler) kbDir(kbID string) string {

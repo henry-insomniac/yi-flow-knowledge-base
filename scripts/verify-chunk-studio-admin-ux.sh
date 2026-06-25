@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-go test ./internal/server -run 'TestAdminDraftChunkListPaginatesThousandChunks|TestAdminDraftChunkUpdateThousandChunkLocalLatencySmoke|TestAdminDraftBulkImportValidationReturnsFieldErrors|TestAdminPageIsServedByTheKnowledgeBaseService|TestAdminPageFollowsProjectDesignSpec|TestAdminPageOrganizesDashboardCategoriesAndSimplifiesChunkCreation' -count=1
+go test ./internal/server -run 'TestAdminDraftChunkListPaginatesThousandChunks|TestAdminDraftChunkUpdateThousandChunkLocalLatencySmoke|TestAdminDraftBulkImportValidationReturnsFieldErrors|TestAdminPageIsServedByTheKnowledgeBaseService|TestAdminPageFollowsProjectDesignSpec|TestAdminPageOrganizesDashboardCategoriesAndSimplifiesChunkCreation|TestAdminSessionLoginSetsHttpOnlyCookieAndAuthorizesAdminAPI|TestAdminSessionRejectsWrongPassword' -count=1
 scripts/smoke-chunk-studio-production.sh
 
 required_terms=(
@@ -32,9 +32,15 @@ required_terms=(
   "draftChunkPayloadForCreate"
   "auto-filled chunk_id/path/source"
   "authStatus"
-  "Admin token missing"
-  "Admin token invalid or missing"
-  "Authorization: Bearer <token>"
+  "adminPassword"
+  "loginAdmin"
+  "logoutAdmin"
+  "/admin/api/session"
+  "adminSessionActive"
+  "请先登录"
+  "登录成功"
+  "created draft + chunk"
+  "yi_flow_kb_admin_session"
 )
 
 missing=()

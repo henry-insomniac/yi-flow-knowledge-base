@@ -3243,15 +3243,91 @@ func TestAdminPageOrganizesDashboardCategoriesAndSimplifiesChunkCreation(t *test
 		"slugifyChunkValue",
 		"draftChunkPayloadForCreate",
 		"auto-filled chunk_id/path/source",
+		`id="adminPassword"`,
+		`id="loginAdmin"`,
+		`id="logoutAdmin"`,
 		`id="authStatus"`,
-		"Admin auth status",
-		"Admin token missing",
-		"Admin token invalid or missing",
+		"管理员密码",
+		"登录成功",
+		"请先登录",
+		"登录已失效",
+		"/admin/api/session",
+		"adminSessionActive",
+		"created draft + chunk",
 		`window.fetch = async`,
-		"Authorization: Bearer <token>",
 	} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("admin page missing dashboard/simplified create marker %q", expected)
+		}
+	}
+}
+
+func TestAdminSessionLoginSetsHttpOnlyCookieAndAuthorizesAdminAPI(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	login := httptest.NewRequest("POST", "/admin/api/session", bytes.NewBufferString(`{"token":"test-admin-token"}`))
+	login.Header.Set("Content-Type", "application/json")
+	loginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(loginResponse, login)
+	if loginResponse.Code != http.StatusOK {
+		t.Fatalf("login status=%d body=%s", loginResponse.Code, loginResponse.Body.String())
+	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range loginResponse.Result().Cookies() {
+		if cookie.Name == "yi_flow_kb_admin_session" {
+			sessionCookie = cookie
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatalf("login did not set admin session cookie")
+	}
+	if !sessionCookie.HttpOnly {
+		t.Fatalf("admin session cookie must be HttpOnly")
+	}
+
+	saveDraft := httptest.NewRequest("PUT", "/admin/api/kb/yi-flow-core/drafts/session-login", bytes.NewBufferString(`{
+		"chunks": [{
+			"chunk_id": "session-login-001",
+			"title": "Session login chunk",
+			"path": "session/login",
+			"source": "manual",
+			"content": "Session login should authorize admin API without a bearer token."
+		}]
+	}`))
+	saveDraft.Header.Set("Content-Type", "application/json")
+	saveDraft.AddCookie(sessionCookie)
+	saveResponse := httptest.NewRecorder()
+	handler.ServeHTTP(saveResponse, saveDraft)
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("session cookie did not authorize admin API status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+}
+
+func TestAdminSessionRejectsWrongPassword(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	login := httptest.NewRequest("POST", "/admin/api/session", bytes.NewBufferString(`{"token":"wrong"}`))
+	login.Header.Set("Content-Type", "application/json")
+	loginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(loginResponse, login)
+	if loginResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password status=%d body=%s", loginResponse.Code, loginResponse.Body.String())
+	}
+	for _, cookie := range loginResponse.Result().Cookies() {
+		if cookie.Name == "yi_flow_kb_admin_session" {
+			t.Fatalf("wrong password must not set admin session cookie")
 		}
 	}
 }
