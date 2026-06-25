@@ -1861,6 +1861,214 @@ func TestBuildPublishExportsPromptMetadata(t *testing.T) {
 	}
 }
 
+func TestAdminDraftRetrievalPreviewFindsTopKWithoutPublishingLatest(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.retrieval", `{
+	  "chunks": [
+	    {
+	      "chunk_id": "agent-routing",
+	      "title": "Agent routing",
+	      "path": "draft/retrieval/agent-routing",
+	      "source": "yi-flow-core",
+	      "content": "Agent routing selects the right tool and retrieval plan before answering.",
+	      "tags": ["agent", "routing"],
+	      "citation_url": "https://yi-flow.com/docs/agent-routing",
+	      "citation_title": "Agent routing design",
+	      "source_name": "yi-flow docs",
+	      "license": "reviewed internal knowledge",
+	      "source_policy": "reviewed yi-flow product chunks only"
+	    },
+	    {
+	      "chunk_id": "agent-routing-missing-citation",
+	      "title": "Agent routing missing citation",
+	      "path": "draft/retrieval/missing-citation",
+	      "source": "yi-flow-core",
+	      "content": "Agent routing also needs missing citation warnings in preview."
+	    },
+	    {
+	      "chunk_id": "billing",
+	      "title": "Billing",
+	      "path": "draft/retrieval/billing",
+	      "source": "yi-flow-core",
+	      "content": "Billing content should not outrank agent routing for routing questions."
+	    }
+	  ],
+	  "prompts": [
+	    {
+	      "id": "prompt-agent-routing",
+	      "title": "Agent routing golden",
+	      "question": "How does agent routing choose tools?",
+	      "expected_chunk_ids": ["agent-routing"],
+	      "tags": ["golden"],
+	      "answerability": "answerable",
+	      "answerable": true
+	    }
+	  ],
+	  "citations": {"citations":[]}
+	}`)
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	latestResponse := httptest.NewRecorder()
+	handler.ServeHTTP(latestResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/latest/manifest.json", nil))
+	if latestResponse.Code != http.StatusNotFound {
+		t.Fatalf("draft retrieval should not publish latest, latest status=%d body=%s", latestResponse.Code, latestResponse.Body.String())
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.retrieval/retrieval-preview", bytes.NewBufferString(`{"query":"agent routing tool retrieval","top_k":2}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("retrieval preview status=%d body=%s", response.Code, response.Body.String())
+	}
+	var preview struct {
+		Status  string   `json:"status"`
+		Query   string   `json:"query"`
+		TopK    int      `json:"top_k"`
+		Reasons []string `json:"reasons"`
+		Results []struct {
+			ChunkID      string   `json:"chunk_id"`
+			Title        string   `json:"title"`
+			Path         string   `json:"path"`
+			Source       string   `json:"source"`
+			Score        float64  `json:"score"`
+			MatchedTerms []string `json:"matched_terms"`
+			Snippet      string   `json:"snippet"`
+			Reasons      []string `json:"reasons"`
+			Citation     struct {
+				URL     string `json:"url"`
+				Title   string `json:"title"`
+				License string `json:"license"`
+			} `json:"citation"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("decode retrieval preview: %v", err)
+	}
+	if preview.Status != "ok" || preview.Query != "agent routing tool retrieval" || preview.TopK != 2 || len(preview.Results) != 2 {
+		t.Fatalf("retrieval preview header/results = %+v body=%s", preview, response.Body.String())
+	}
+	if preview.Results[0].ChunkID != "agent-routing" || preview.Results[0].Score <= 0 || !containsString(preview.Results[0].MatchedTerms, "agent") || !strings.Contains(preview.Results[0].Snippet, "Agent routing") {
+		t.Fatalf("top result = %+v", preview.Results[0])
+	}
+	if preview.Results[0].Citation.URL != "https://yi-flow.com/docs/agent-routing" || preview.Results[0].Citation.License != "reviewed internal knowledge" {
+		t.Fatalf("top result citation = %+v", preview.Results[0].Citation)
+	}
+	if !containsString(preview.Results[1].Reasons, "missing_citation") {
+		t.Fatalf("second result should report missing_citation: %+v", preview.Results[1])
+	}
+
+	promptRequest := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.retrieval/retrieval-preview", bytes.NewBufferString(`{"prompt_id":"prompt-agent-routing","top_k":1}`))
+	promptRequest.Header.Set("Authorization", "Bearer test-admin-token")
+	promptRequest.Header.Set("Content-Type", "application/json")
+	promptResponse := httptest.NewRecorder()
+	handler.ServeHTTP(promptResponse, promptRequest)
+	if promptResponse.Code != http.StatusOK {
+		t.Fatalf("prompt retrieval preview status=%d body=%s", promptResponse.Code, promptResponse.Body.String())
+	}
+	if !bytes.Contains(promptResponse.Body.Bytes(), []byte(`"prompt_id":"prompt-agent-routing"`)) || !bytes.Contains(promptResponse.Body.Bytes(), []byte(`"query":"How does agent routing choose tools?"`)) {
+		t.Fatalf("prompt retrieval preview missing prompt metadata: %s", promptResponse.Body.String())
+	}
+
+	emptyRequest := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.retrieval/retrieval-preview", bytes.NewBufferString(`{"query":"zzzz nohit","top_k":3}`))
+	emptyRequest.Header.Set("Authorization", "Bearer test-admin-token")
+	emptyRequest.Header.Set("Content-Type", "application/json")
+	emptyResponse := httptest.NewRecorder()
+	handler.ServeHTTP(emptyResponse, emptyRequest)
+	if emptyResponse.Code != http.StatusOK {
+		t.Fatalf("empty retrieval status=%d body=%s", emptyResponse.Code, emptyResponse.Body.String())
+	}
+	if !bytes.Contains(emptyResponse.Body.Bytes(), []byte(`"status":"no_answer"`)) || !bytes.Contains(emptyResponse.Body.Bytes(), []byte(`"empty_retrieval"`)) {
+		t.Fatalf("empty retrieval should report no_answer and empty_retrieval: %s", emptyResponse.Body.String())
+	}
+
+	weakRequest := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.retrieval/retrieval-preview", bytes.NewBufferString(`{"query":"agent unmatchedone unmatchedtwo unmatchedthree","top_k":1}`))
+	weakRequest.Header.Set("Authorization", "Bearer test-admin-token")
+	weakRequest.Header.Set("Content-Type", "application/json")
+	weakResponse := httptest.NewRecorder()
+	handler.ServeHTTP(weakResponse, weakRequest)
+	if weakResponse.Code != http.StatusOK {
+		t.Fatalf("weak retrieval status=%d body=%s", weakResponse.Code, weakResponse.Body.String())
+	}
+	if !bytes.Contains(weakResponse.Body.Bytes(), []byte(`"status":"weak_score"`)) || !bytes.Contains(weakResponse.Body.Bytes(), []byte(`"weak_score"`)) {
+		t.Fatalf("weak retrieval should report weak_score: %s", weakResponse.Body.String())
+	}
+}
+
+func TestAdminDraftRetrievalPreviewLocalLatencySmoke(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	chunks := make([]map[string]any, 0, 1000)
+	for index := 0; index < 1000; index++ {
+		content := "General draft retrieval content " + strconv.Itoa(index)
+		if index%25 == 0 {
+			content = "Needle routing retrieval preview content " + strconv.Itoa(index)
+		}
+		chunks = append(chunks, map[string]any{
+			"chunk_id":       "chunk-" + strconv.Itoa(index),
+			"title":          "Chunk " + strconv.Itoa(index),
+			"path":           "draft/retrieval/" + strconv.Itoa(index),
+			"source":         "yi-flow-core",
+			"content":        content,
+			"citation_url":   "https://yi-flow.com/docs/" + strconv.Itoa(index),
+			"citation_title": "Chunk " + strconv.Itoa(index),
+			"source_name":    "yi-flow docs",
+			"license":        "reviewed internal knowledge",
+			"source_policy":  "reviewed yi-flow product chunks only",
+		})
+	}
+	body, err := json.Marshal(map[string]any{
+		"chunks":    chunks,
+		"prompts":   []any{},
+		"citations": map[string]any{"citations": []any{}},
+	})
+	if err != nil {
+		t.Fatalf("encode draft: %v", err)
+	}
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.retrieval-latency", string(body))
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save retrieval draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	durations := make([]time.Duration, 0, 25)
+	for index := 0; index < 25; index++ {
+		request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.retrieval-latency/retrieval-preview", bytes.NewBufferString(`{"query":"needle routing retrieval","top_k":5}`))
+		request.Header.Set("Authorization", "Bearer test-admin-token")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		start := time.Now()
+		handler.ServeHTTP(response, request)
+		durations = append(durations, time.Since(start))
+		if response.Code != http.StatusOK {
+			t.Fatalf("retrieval preview status=%d body=%s", response.Code, response.Body.String())
+		}
+		if !bytes.Contains(response.Body.Bytes(), []byte(`"status":"ok"`)) {
+			t.Fatalf("retrieval preview should be ok: %s", response.Body.String())
+		}
+	}
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	p95Index := (len(durations)*95+99)/100 - 1
+	if p95 := durations[p95Index]; p95 > time.Second {
+		t.Fatalf("draft retrieval p95=%s want <=1s all=%v", p95, durations)
+	}
+}
+
 func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -1913,6 +2121,9 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 		"Answerability",
 		"创建 prompt",
 		"运行 prompt 预览",
+		"Draft retrieval preview",
+		"Draft retrieval question",
+		"运行 draft retrieval preview",
 	} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("admin page missing chunk editor control %q", expected)
@@ -2036,6 +2247,15 @@ func saveDraftJSON(t *testing.T, handler http.Handler, kbID string, version stri
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func multipartRequest(

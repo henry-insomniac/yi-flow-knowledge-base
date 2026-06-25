@@ -71,6 +71,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAdminPage(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/source-audit"):
 		h.handleDraftSourceAudit(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/retrieval-preview"):
+		h.handleDraftRetrievalPreview(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.Contains(r.URL.Path, "/prompts/") && strings.HasSuffix(r.URL.Path, "/preview"):
 		h.handleDraftPromptPreview(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/prompts"):
@@ -343,6 +345,13 @@ const adminPageHTML = `<!doctype html>
     <button id="listDraftPrompts" class="secondary" type="button">列出 prompts</button>
     <button id="previewDraftPrompt" class="secondary" type="button">运行 prompt 预览</button>
     <div id="draftPrompts" class="chunk-list"></div>
+    <h3>Draft retrieval preview</h3>
+    <div class="grid">
+      <label>Draft retrieval question <input id="draftRetrievalQuery" placeholder="输入问题，发布前检索 draft chunks"></label>
+      <label>Draft TopK <input id="draftRetrievalTopK" type="number" min="1" max="12" value="5"></label>
+    </div>
+    <button id="runDraftRetrievalPreview" class="secondary" type="button">运行 draft retrieval preview</button>
+    <div id="draftRetrievalResults" class="chunk-list"></div>
     <p id="weknoraStatus" class="muted">Chunk Studio status: direction locked; draft editor is tracked in #42/#43.</p>
     <div class="grid">
       <p class="muted">最近导出版本：<strong id="lastWeKnoraExportVersion">-</strong></p>
@@ -455,6 +464,7 @@ const lastWeKnoraQualityGate = document.querySelector("#lastWeKnoraQualityGate")
 const draftStatus = document.querySelector("#draftStatus");
 const draftChunksList = document.querySelector("#draftChunks");
 const draftPromptsList = document.querySelector("#draftPrompts");
+const draftRetrievalResults = document.querySelector("#draftRetrievalResults");
 const servicePrefix = location.pathname.includes("/admin") ? location.pathname.split("/admin")[0] : "";
 let lastPreview = null;
 let lastWeKnoraDryRun = null;
@@ -947,7 +957,11 @@ document.querySelector("#previewDraftPrompt").onclick = async () => {
   const decoded = JSON.parse(text);
   renderPreview({ kb_id: decoded.kb_id, version: decoded.version, chunks: decoded.chunks || [] });
   document.querySelector("#ragQuery").value = (decoded.prompt || {}).question || "";
+  document.querySelector("#draftRetrievalQuery").value = (decoded.prompt || {}).question || "";
   draftStatus.textContent = "Draft workspace status: prompt preview · " + promptID;
+};
+document.querySelector("#runDraftRetrievalPreview").onclick = async () => {
+  await runDraftRetrievalPreview("");
 };
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {
@@ -1270,9 +1284,87 @@ function renderDraftPromptCard(prompt) {
   preview.textContent = "预览";
   preview.onclick = async () => {
     fillDraftFromPrompt(prompt);
-    document.querySelector("#previewDraftPrompt").click();
+    document.querySelector("#draftRetrievalQuery").value = prompt.question || prompt.text || "";
+    await runDraftRetrievalPreview(prompt.id || "");
   };
   card.append(preview);
+  return card;
+}
+async function runDraftRetrievalPreview(promptID) {
+  const topK = Math.max(1, Math.min(12, Number(document.querySelector("#draftRetrievalTopK").value || 5)));
+  const body = {
+    query: document.querySelector("#draftRetrievalQuery").value.trim(),
+    prompt_id: promptID || "",
+    top_k: topK
+  };
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/retrieval-preview", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftRetrievalResults.replaceChildren();
+    draftStatus.textContent = "Draft workspace status: draft retrieval failed";
+    return;
+  }
+  const decoded = JSON.parse(text);
+  renderDraftRetrievalResults(decoded);
+  draftStatus.textContent = "Draft workspace status: draft retrieval · " + decoded.status + " · " + (decoded.results || []).length + " chunks";
+}
+function renderDraftRetrievalResults(preview) {
+  draftRetrievalResults.replaceChildren(...(preview.results || []).map(renderDraftRetrievalResult));
+  if ((preview.results || []).length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = [preview.status, ...(preview.reasons || [])].filter(Boolean).join(" · ");
+    draftRetrievalResults.append(empty);
+  }
+}
+function renderDraftRetrievalResult(result) {
+  const card = document.createElement("article");
+  card.className = "chunk-card";
+
+  const title = document.createElement("h3");
+  title.textContent = result.title || result.chunk_id;
+  card.append(title);
+
+  const meta = document.createElement("div");
+  meta.className = "chunk-meta";
+  meta.textContent = [
+    result.chunk_id,
+    result.path,
+    result.source,
+    "score=" + Number(result.score || 0).toFixed(3),
+    "terms=" + (result.matched_terms || []).join(", "),
+    (result.reasons || []).join(", ")
+  ].filter(Boolean).join(" · ");
+  card.append(meta);
+
+  const snippet = document.createElement("p");
+  snippet.className = "chunk-content";
+  snippet.textContent = result.snippet || "";
+  card.append(snippet);
+
+  if (result.citation && (result.citation.url || result.citation.license || result.citation.source_policy)) {
+    const citation = document.createElement("div");
+    citation.className = "chunk-meta";
+    citation.textContent = [
+      result.citation.title ? "引用：" + result.citation.title : "",
+      result.citation.source_name ? "来源：" + result.citation.source_name : "",
+      result.citation.license ? "许可：" + result.citation.license : "",
+      result.citation.source_policy ? "策略：" + result.citation.source_policy : ""
+    ].filter(Boolean).join(" · ");
+    if (result.citation.url) {
+      const link = document.createElement("a");
+      link.href = result.citation.url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = "打开来源";
+      citation.append(" · ", link);
+    }
+    card.append(citation);
+  }
   return card;
 }
 function renderPreview(preview) {
