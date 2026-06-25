@@ -14,6 +14,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -3243,14 +3244,15 @@ func TestAdminPageOrganizesDashboardCategoriesAndSimplifiesChunkCreation(t *test
 		"slugifyChunkValue",
 		"draftChunkPayloadForCreate",
 		"auto-filled chunk_id/path/source",
-		`id="adminPassword"`,
 		`id="loginAdmin"`,
 		`id="logoutAdmin"`,
 		`id="authStatus"`,
-		"管理员密码",
-		"登录成功",
+		"统一登录",
+		"使用 yi-flow 账号登录",
 		"请先登录",
 		"登录已失效",
+		"/admin/login",
+		"/admin/logout",
 		"/admin/api/session",
 		"adminSessionActive",
 		"created draft + chunk",
@@ -3259,6 +3261,146 @@ func TestAdminPageOrganizesDashboardCategoriesAndSimplifiesChunkCreation(t *test
 		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("admin page missing dashboard/simplified create marker %q", expected)
 		}
+	}
+}
+
+func TestAdminLoginRedirectsToAuthServiceWithPKCE(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:           t.TempDir(),
+		AdminToken:           "test-admin-token",
+		AdminAuthBaseURL:     "https://auth.example.test",
+		AdminAuthClientID:    "yi-flow-knowledge-base",
+		AdminAuthRedirectURL: "https://yi-flow.com/knowledge-base/admin/oauth/callback",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/admin/login", nil))
+	if response.Code != http.StatusFound {
+		t.Fatalf("login status=%d body=%s", response.Code, response.Body.String())
+	}
+	location, err := url.Parse(response.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse redirect: %v", err)
+	}
+	if location.Scheme+"://"+location.Host+location.Path != "https://auth.example.test/oauth/authorize" {
+		t.Fatalf("authorize redirect=%s", location.String())
+	}
+	query := location.Query()
+	for key, expected := range map[string]string{
+		"client_id":             "yi-flow-knowledge-base",
+		"redirect_uri":          "https://yi-flow.com/knowledge-base/admin/oauth/callback",
+		"response_type":         "code",
+		"code_challenge_method": "S256",
+	} {
+		if query.Get(key) != expected {
+			t.Fatalf("%s=%q want %q in redirect %s", key, query.Get(key), expected, location.String())
+		}
+	}
+	if query.Get("state") == "" || query.Get("code_challenge") == "" {
+		t.Fatalf("redirect missing state/code_challenge: %s", location.String())
+	}
+	cookies := response.Result().Cookies()
+	if !hasCookieNamed(cookies, "yi_flow_kb_oauth_state") || !hasCookieNamed(cookies, "yi_flow_kb_oauth_verifier") {
+		t.Fatalf("login did not set oauth state/verifier cookies: %v", cookies)
+	}
+}
+
+func TestAdminOAuthCallbackSetsSessionCookieAndAuthorizesAdminAPI(t *testing.T) {
+	var tokenRequestBody string
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth/token" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse token form: %v", err)
+		}
+		tokenRequestBody = r.Form.Encode()
+		if r.Form.Get("grant_type") != "authorization_code" {
+			t.Fatalf("grant_type=%q", r.Form.Get("grant_type"))
+		}
+		if r.Form.Get("client_id") != "yi-flow-knowledge-base" {
+			t.Fatalf("client_id=%q", r.Form.Get("client_id"))
+		}
+		if r.Form.Get("redirect_uri") != "https://yi-flow.com/knowledge-base/admin/oauth/callback" {
+			t.Fatalf("redirect_uri=%q", r.Form.Get("redirect_uri"))
+		}
+		if r.Form.Get("code") != "code-1" || r.Form.Get("code_verifier") == "" {
+			t.Fatalf("invalid code exchange form=%s", r.Form.Encode())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"access-1","id_token":"id-1","token_type":"Bearer","expires_in":900}`)
+	}))
+	defer authServer.Close()
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:           t.TempDir(),
+		AdminToken:           "test-admin-token",
+		AdminAuthBaseURL:     authServer.URL,
+		AdminAuthClientID:    "yi-flow-knowledge-base",
+		AdminAuthRedirectURL: "https://yi-flow.com/knowledge-base/admin/oauth/callback",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	loginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(loginResponse, httptest.NewRequest("GET", "/admin/login", nil))
+	if loginResponse.Code != http.StatusFound {
+		t.Fatalf("login status=%d body=%s", loginResponse.Code, loginResponse.Body.String())
+	}
+	loginRedirect, err := url.Parse(loginResponse.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse login redirect: %v", err)
+	}
+	state := loginRedirect.Query().Get("state")
+	if state == "" {
+		t.Fatal("login redirect missing state")
+	}
+
+	callback := httptest.NewRequest("GET", "/admin/oauth/callback?code=code-1&state="+url.QueryEscape(state), nil)
+	for _, cookie := range loginResponse.Result().Cookies() {
+		callback.AddCookie(cookie)
+	}
+	callbackResponse := httptest.NewRecorder()
+	handler.ServeHTTP(callbackResponse, callback)
+	if callbackResponse.Code != http.StatusFound {
+		t.Fatalf("callback status=%d body=%s", callbackResponse.Code, callbackResponse.Body.String())
+	}
+	if tokenRequestBody == "" {
+		t.Fatal("callback did not exchange oauth code")
+	}
+	if callbackResponse.Header().Get("Location") != "https://yi-flow.com/knowledge-base/admin/" {
+		t.Fatalf("callback location=%q", callbackResponse.Header().Get("Location"))
+	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range callbackResponse.Result().Cookies() {
+		if cookie.Name == "yi_flow_kb_admin_session" {
+			sessionCookie = cookie
+		}
+	}
+	if sessionCookie == nil || !sessionCookie.HttpOnly {
+		t.Fatalf("callback did not set HttpOnly admin session cookie: %v", callbackResponse.Result().Cookies())
+	}
+
+	saveDraft := httptest.NewRequest("PUT", "/admin/api/kb/yi-flow-core/drafts/oauth-session", bytes.NewBufferString(`{
+		"chunks": [{
+			"chunk_id": "oauth-session-001",
+			"title": "OAuth session chunk",
+			"path": "oauth/session",
+			"source": "manual",
+			"content": "OAuth callback should authorize admin API without a bearer token."
+		}]
+	}`))
+	saveDraft.Header.Set("Content-Type", "application/json")
+	saveDraft.AddCookie(sessionCookie)
+	saveResponse := httptest.NewRecorder()
+	handler.ServeHTTP(saveResponse, saveDraft)
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("oauth session cookie did not authorize admin API status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
 	}
 }
 
@@ -3414,6 +3556,15 @@ func saveDraftJSON(t *testing.T, handler http.Handler, kbID string, version stri
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCookieNamed(cookies []*http.Cookie, name string) bool {
+	for _, cookie := range cookies {
+		if cookie.Name == name {
 			return true
 		}
 	}

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-go test ./internal/server -run 'TestAdminDraftChunkListPaginatesThousandChunks|TestAdminDraftChunkUpdateThousandChunkLocalLatencySmoke|TestAdminDraftBulkImportValidationReturnsFieldErrors|TestAdminPageIsServedByTheKnowledgeBaseService|TestAdminPageFollowsProjectDesignSpec|TestAdminPageOrganizesDashboardCategoriesAndSimplifiesChunkCreation|TestAdminSessionLoginSetsHttpOnlyCookieAndAuthorizesAdminAPI|TestAdminSessionRejectsWrongPassword' -count=1
+go test ./internal/server -run 'TestAdminDraftChunkListPaginatesThousandChunks|TestAdminDraftChunkUpdateThousandChunkLocalLatencySmoke|TestAdminDraftBulkImportValidationReturnsFieldErrors|TestAdminPageIsServedByTheKnowledgeBaseService|TestAdminPageFollowsProjectDesignSpec|TestAdminPageOrganizesDashboardCategoriesAndSimplifiesChunkCreation|TestAdminLoginRedirectsToAuthServiceWithPKCE|TestAdminOAuthCallbackSetsSessionCookieAndAuthorizesAdminAPI|TestAdminSessionLoginSetsHttpOnlyCookieAndAuthorizesAdminAPI|TestAdminSessionRejectsWrongPassword' -count=1
 scripts/smoke-chunk-studio-production.sh
 
 required_terms=(
@@ -32,13 +32,19 @@ required_terms=(
   "draftChunkPayloadForCreate"
   "auto-filled chunk_id/path/source"
   "authStatus"
-  "adminPassword"
   "loginAdmin"
   "logoutAdmin"
+  "/admin/login"
+  "/admin/logout"
+  "/admin/oauth/callback"
+  "/oauth/authorize"
+  "/oauth/token"
+  "code_challenge"
+  "code_verifier"
   "/admin/api/session"
   "adminSessionActive"
+  "使用 yi-flow 账号登录"
   "请先登录"
-  "登录成功"
   "created draft + chunk"
   "yi_flow_kb_admin_session"
 )

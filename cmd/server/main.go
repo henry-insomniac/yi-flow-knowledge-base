@@ -29,6 +29,9 @@ func main() {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir:                 storageDir,
 		AdminToken:                 adminToken,
+		AdminAuthBaseURL:           os.Getenv("ADMIN_AUTH_BASE_URL"),
+		AdminAuthClientID:          os.Getenv("ADMIN_AUTH_CLIENT_ID"),
+		AdminAuthRedirectURL:       os.Getenv("ADMIN_AUTH_REDIRECT_URL"),
 		KnowledgePackSigningSeed:   signingSeed,
 		MoegirlAPIURL:              os.Getenv("MOEGIRL_API_URL"),
 		MoegirlSitemapIndexURL:     os.Getenv("MOEGIRL_SITEMAP_INDEX_URL"),

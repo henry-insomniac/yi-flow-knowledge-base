@@ -2,7 +2,9 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -10,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,10 +23,15 @@ import (
 )
 
 const adminSessionCookieName = "yi_flow_kb_admin_session"
+const adminOAuthStateCookieName = "yi_flow_kb_oauth_state"
+const adminOAuthVerifierCookieName = "yi_flow_kb_oauth_verifier"
 
 type Options struct {
 	StorageDir                 string
 	AdminToken                 string
+	AdminAuthBaseURL           string
+	AdminAuthClientID          string
+	AdminAuthRedirectURL       string
 	KnowledgePackSigningSeed   []byte
 	MoegirlAPIURL              string
 	MoegirlSitemapIndexURL     string
@@ -34,6 +42,9 @@ type Options struct {
 type Handler struct {
 	storageDir                 string
 	adminToken                 string
+	adminAuthBaseURL           string
+	adminAuthClientID          string
+	adminAuthRedirectURL       string
 	knowledgePackSigningSeed   []byte
 	moegirlAPIURL              string
 	moegirlSitemapIndexURL     string
@@ -59,6 +70,9 @@ func NewHandler(options Options) (http.Handler, error) {
 	return &Handler{
 		storageDir:                 options.StorageDir,
 		adminToken:                 options.AdminToken,
+		adminAuthBaseURL:           strings.TrimRight(strings.TrimSpace(options.AdminAuthBaseURL), "/"),
+		adminAuthClientID:          defaultString(options.AdminAuthClientID, "yi-flow-knowledge-base"),
+		adminAuthRedirectURL:       strings.TrimSpace(options.AdminAuthRedirectURL),
 		knowledgePackSigningSeed:   signingSeed,
 		moegirlAPIURL:              defaultString(options.MoegirlAPIURL, defaultMoegirlAPIURL),
 		moegirlSitemapIndexURL:     defaultString(options.MoegirlSitemapIndexURL, defaultMoegirlSitemapIndexURL),
@@ -76,6 +90,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleRAGQuery(w, r)
 	case r.Method == http.MethodGet && (r.URL.Path == "/admin" || r.URL.Path == "/admin/"):
 		h.handleAdminPage(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/admin/login":
+		h.handleAdminLogin(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/admin/oauth/callback":
+		h.handleAdminOAuthCallback(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/admin/logout":
+		h.handleAdminLogout(w, r)
 	case (r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodDelete) && r.URL.Path == "/admin/api/session":
 		h.handleAdminSession(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/source-audit"):
@@ -166,6 +186,82 @@ func defaultString(value string, fallback string) string {
 func (h *Handler) handleAdminPage(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, adminPageHTML)
+}
+
+func (h *Handler) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
+	if h.adminAuthBaseURL == "" || h.adminAuthRedirectURL == "" {
+		http.Error(w, "admin auth is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	state, err := randomURLToken(32)
+	if err != nil {
+		http.Error(w, "create login state failed", http.StatusInternalServerError)
+		return
+	}
+	verifier, err := randomURLToken(64)
+	if err != nil {
+		http.Error(w, "create login verifier failed", http.StatusInternalServerError)
+		return
+	}
+	expiresAt := time.Now().Add(10 * time.Minute)
+	h.setTransientCookie(w, r, adminOAuthStateCookieName, state, expiresAt)
+	h.setTransientCookie(w, r, adminOAuthVerifierCookieName, verifier, expiresAt)
+
+	authorizeURL, err := url.Parse(h.adminAuthBaseURL + "/oauth/authorize")
+	if err != nil {
+		http.Error(w, "invalid auth base url", http.StatusInternalServerError)
+		return
+	}
+	query := authorizeURL.Query()
+	query.Set("client_id", h.adminAuthClientID)
+	query.Set("redirect_uri", h.adminAuthRedirectURL)
+	query.Set("response_type", "code")
+	query.Set("scope", "openid email profile")
+	query.Set("state", state)
+	query.Set("code_challenge", pkceChallenge(verifier))
+	query.Set("code_challenge_method", "S256")
+	authorizeURL.RawQuery = query.Encode()
+	http.Redirect(w, r, authorizeURL.String(), http.StatusFound)
+}
+
+func (h *Handler) handleAdminOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	expectedState, ok := cookieValue(r, adminOAuthStateCookieName)
+	if code == "" || state == "" || !ok || !hmac.Equal([]byte(state), []byte(expectedState)) {
+		http.Error(w, "invalid oauth callback", http.StatusBadRequest)
+		return
+	}
+	verifier, ok := cookieValue(r, adminOAuthVerifierCookieName)
+	if !ok || verifier == "" {
+		http.Error(w, "missing oauth verifier", http.StatusBadRequest)
+		return
+	}
+	if err := h.exchangeAdminOAuthCode(r.Context(), code, verifier); err != nil {
+		http.Error(w, "oauth token exchange failed", http.StatusBadGateway)
+		return
+	}
+	h.clearNamedCookie(w, r, adminOAuthStateCookieName)
+	h.clearNamedCookie(w, r, adminOAuthVerifierCookieName)
+	h.setAdminSessionCookie(w, r)
+	http.Redirect(w, r, h.adminHomeURL(r), http.StatusFound)
+}
+
+func (h *Handler) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	h.clearAdminSessionCookie(w, r)
+	if h.adminAuthBaseURL == "" {
+		http.Redirect(w, r, h.adminHomeURL(r), http.StatusFound)
+		return
+	}
+	logoutURL, err := url.Parse(h.adminAuthBaseURL + "/oauth/logout")
+	if err != nil {
+		http.Redirect(w, r, h.adminHomeURL(r), http.StatusFound)
+		return
+	}
+	query := logoutURL.Query()
+	query.Set("post_logout_redirect_uri", h.adminHomeURL(r))
+	logoutURL.RawQuery = query.Encode()
+	http.Redirect(w, r, logoutURL.String(), http.StatusFound)
 }
 
 func (h *Handler) handleAdminSession(w http.ResponseWriter, r *http.Request) {
@@ -454,7 +550,7 @@ const adminPageHTML = `<!doctype html>
 <body>
 <main>
   <h1>Knowledge Pack Admin</h1>
-  <p>发布、查看和回滚 yi-flow Knowledge Pack。Admin token 只保存在当前浏览器。</p>
+  <p>发布、查看和回滚 yi-flow Knowledge Pack。管理操作需要先使用 yi-flow 账号登录。</p>
   <nav id="dashboardCategoryNav" class="dashboard-nav" aria-label="Knowledge pack dashboard categories">
     <a href="#dashboard-config">Catalog</a>
     <a href="#dashboard-create">Create</a>
@@ -465,15 +561,14 @@ const adminPageHTML = `<!doctype html>
   </nav>
 
   <section id="dashboard-config" data-dashboard-category="catalog">
-    <h2>登录</h2>
-    <p class="muted">使用管理员密码登录后再创建、审核、发布或回滚知识包。密码不会保存到浏览器；登录成功后使用服务端会话。</p>
+    <h2>统一登录</h2>
+    <p class="muted">使用 yi-flow 账号登录后再创建、审核、发布或回滚知识包。登录由 auth-service 处理，本页面只保存服务端会话。</p>
     <div class="grid">
-      <label>管理员密码 <input id="adminPassword" type="password" autocomplete="current-password" placeholder="输入管理员密码"></label>
       <label>Knowledge base ID <input id="kbID" value="yi-flow-core"></label>
     </div>
-    <button id="loginAdmin" type="button">登录</button>
+    <button id="loginAdmin" type="button">使用 yi-flow 账号登录</button>
     <button id="logoutAdmin" class="secondary" type="button">退出登录</button>
-    <p id="authStatus" class="muted">未登录。请先登录再操作知识包。</p>
+    <p id="authStatus" class="muted">正在检查登录状态。</p>
   </section>
 
   <section id="dashboard-create" data-dashboard-category="create">
@@ -711,7 +806,6 @@ const adminPageHTML = `<!doctype html>
   </section>
 </main>
 <script>
-const tokenInput = document.querySelector("#adminPassword");
 const kbIDInput = document.querySelector("#kbID");
 const output = document.querySelector("#output");
 const authStatus = document.querySelector("#authStatus");
@@ -796,9 +890,6 @@ fillDraftTemplate(false);
 checkAdminSession();
 document.querySelector("#loginAdmin").onclick = loginAdmin;
 document.querySelector("#logoutAdmin").onclick = logoutAdmin;
-tokenInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") loginAdmin();
-});
 for (const selector of ["#draftChunkID", "#draftChunkTitle", "#draftChunkPath", "#draftChunkSource", "#draftChunkTags", "#draftChunkReviewStatus", "#draftCitationURL", "#draftCitationTitle", "#draftSourceName", "#draftLicense", "#draftSourcePolicy", "#draftSourceRevisionID", "#draftSourcePageID", "#draftChunkContent"]) {
   document.querySelector(selector).addEventListener("input", markDraftDirty);
   document.querySelector(selector).addEventListener("change", markDraftDirty);
@@ -807,56 +898,31 @@ for (const selector of ["#draftPromptID", "#draftPromptTitle", "#draftPromptExpe
   document.querySelector(selector).addEventListener("input", markDraftDirty);
   document.querySelector(selector).addEventListener("change", markDraftDirty);
 }
-function token() { return tokenInput.value.trim(); }
+function token() { return ""; }
 function updateAuthStatus(active, message) {
   adminSessionActive = Boolean(active);
   authStatus.textContent = message || (adminSessionActive
     ? "已登录。可以创建、审核、发布和回滚知识包。"
-    : "未登录。输入管理员密码并点击登录。");
+    : "未登录。请使用 yi-flow 账号登录。");
 }
 async function checkAdminSession() {
   const response = await nativeFetch(servicePrefix + "/admin/api/session", { credentials: "same-origin" });
   updateAuthStatus(response.ok);
 }
 async function loginAdmin() {
-  const password = token();
-  if (!password) {
-    output.textContent = "请输入管理员密码。";
-    updateAuthStatus(false, "未登录。请输入管理员密码。");
-    tokenInput.focus();
-    return;
-  }
-  const response = await nativeFetch(servicePrefix + "/admin/api/session", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token: password })
-  });
-  if (!response.ok) {
-    output.textContent = "登录失败：管理员密码不正确。";
-    updateAuthStatus(false, "未登录。管理员密码不正确。");
-    tokenInput.focus();
-    return;
-  }
-  tokenInput.value = "";
-  updateAuthStatus(true, "已登录。可以管理知识包。");
-  output.textContent = "登录成功。";
+  window.location.assign(servicePrefix + "/admin/login");
 }
 async function logoutAdmin() {
-  await nativeFetch(servicePrefix + "/admin/api/session", { method: "DELETE", credentials: "same-origin" });
-  tokenInput.value = "";
-  updateAuthStatus(false, "已退出登录。");
-  output.textContent = "已退出登录。";
+  window.location.assign(servicePrefix + "/admin/logout");
 }
 window.fetch = async (resource, options = {}) => {
   const url = typeof resource === "string" ? resource : (resource && resource.url) || "";
   const adminAPI = String(url).includes("/admin/api/");
   const sessionAPI = String(url).includes("/admin/api/session");
   if (adminAPI && !sessionAPI && !adminSessionActive) {
-    const message = "请先登录。输入管理员密码并点击登录，然后再执行这个操作。";
+    const message = "请先使用 yi-flow 账号登录，然后再执行这个操作。";
     output.textContent = message;
     updateAuthStatus(false, "未登录。请先登录后再操作知识包。");
-    tokenInput.focus();
     return new Response(message, { status: 401, statusText: "Login required" });
   }
   const nextOptions = { ...options, credentials: options.credentials || "same-origin" };
@@ -1067,12 +1133,11 @@ function confirmDiscardDraftChanges() {
 async function showResponse(response) {
   const text = await response.text();
   if (response.status === 401) {
-    const message = text.includes("请先登录")
+    const message = text.includes("请先")
       ? text
-      : "登录已失效或管理员密码不正确。请重新登录后再试。";
+      : "登录已失效。请重新使用 yi-flow 账号登录后再试。";
     output.textContent = "401\n" + message;
     updateAuthStatus(false, "未登录。请重新登录。");
-    tokenInput.focus();
     return text;
   }
   output.textContent = response.status + "\n" + text;
@@ -2461,9 +2526,26 @@ func (h *Handler) setAdminSessionCookie(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-func (h *Handler) clearAdminSessionCookie(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) setTransientCookie(w http.ResponseWriter, r *http.Request, name string, value string, expiresAt time.Time) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     adminSessionCookieName,
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		Expires:  expiresAt,
+		MaxAge:   int(time.Until(expiresAt).Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+	})
+}
+
+func (h *Handler) clearAdminSessionCookie(w http.ResponseWriter, r *http.Request) {
+	h.clearNamedCookie(w, r, adminSessionCookieName)
+}
+
+func (h *Handler) clearNamedCookie(w http.ResponseWriter, r *http.Request, name string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
 		Value:    "",
 		Path:     "/",
 		Expires:  time.Unix(0, 0),
@@ -2497,6 +2579,82 @@ func (h *Handler) adminSessionCookieValue(expiresAt time.Time) string {
 	_, _ = mac.Write([]byte(payload))
 	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return payload + "." + signature
+}
+
+func (h *Handler) exchangeAdminOAuthCode(ctx context.Context, code string, verifier string) error {
+	tokenURL := h.adminAuthBaseURL + "/oauth/token"
+	body := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {h.adminAuthClientID},
+		"redirect_uri":  {h.adminAuthRedirectURL},
+		"code":          {code},
+		"code_verifier": {verifier},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(body.Encode()))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, response.Body)
+		return fmt.Errorf("oauth token status %d", response.StatusCode)
+	}
+	var payload struct {
+		AccessToken string `json:"access_token"`
+		IDToken     string `json:"id_token"`
+		TokenType   string `json:"token_type"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return err
+	}
+	if payload.AccessToken == "" || payload.TokenType != "Bearer" {
+		return errors.New("oauth token response missing bearer access token")
+	}
+	return nil
+}
+
+func (h *Handler) adminHomeURL(r *http.Request) string {
+	if h.adminAuthRedirectURL != "" {
+		if strings.HasSuffix(h.adminAuthRedirectURL, "/oauth/callback") {
+			return strings.TrimSuffix(h.adminAuthRedirectURL, "/oauth/callback") + "/"
+		}
+	}
+	scheme := "http"
+	if requestIsHTTPS(r) {
+		scheme = "https"
+	}
+	host := r.Host
+	if forwardedHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+		host = forwardedHost
+	}
+	return scheme + "://" + host + "/admin/"
+}
+
+func cookieValue(r *http.Request, name string) (string, bool) {
+	cookie, err := r.Cookie(name)
+	if err != nil {
+		return "", false
+	}
+	return cookie.Value, true
+}
+
+func randomURLToken(byteCount int) (string, error) {
+	data := make([]byte, byteCount)
+	if _, err := rand.Read(data); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func pkceChallenge(verifier string) string {
+	hash := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
 
 func requestIsHTTPS(r *http.Request) bool {
