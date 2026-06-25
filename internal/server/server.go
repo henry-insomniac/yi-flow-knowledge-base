@@ -69,6 +69,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleRAGQuery(w, r)
 	case r.Method == http.MethodGet && (r.URL.Path == "/admin" || r.URL.Path == "/admin/"):
 		h.handleAdminPage(w, r)
+	case (r.Method == http.MethodPut || r.Method == http.MethodPost) && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/"):
+		h.handleSaveDraft(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/preview"):
+		h.handleDraftPreview(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/"):
+		h.handleGetDraft(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/rag/compare"):
 		h.handleAdminRAGCompare(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/weknora/export-dry-run"):
@@ -247,6 +253,18 @@ const adminPageHTML = `<!doctype html>
       <p class="muted"><strong>Quality gates</strong><br>发布前检查缺字段、重复、污染、citation 覆盖和 golden eval。</p>
       <p class="muted"><strong>Signed package</strong><br>继续生成 manifest.json、knowledge-pack.zip、chunks.sqlite、citations.json 和 prompts.json。</p>
     </div>
+    <div class="grid">
+      <label>Draft version <input id="draftVersion" placeholder="2026.06.26.draft"></label>
+      <label>Chunk ID <input id="draftChunkID" placeholder="draft-topic-001"></label>
+      <label>Title <input id="draftChunkTitle" placeholder="知识点标题"></label>
+      <label>Path <input id="draftChunkPath" placeholder="topic/category/name"></label>
+      <label>Source <input id="draftChunkSource" value="manual"></label>
+    </div>
+    <label>Content <textarea id="draftChunkContent" spellcheck="false" placeholder="这里写 chunk 内容。保存后会进入草稿预览，但不会修改 latest。"></textarea></label>
+    <button id="saveDraft" type="button">保存草稿</button>
+    <button id="loadDraft" class="secondary" type="button">读取草稿</button>
+    <button id="previewDraft" class="secondary" type="button">预览草稿 chunk</button>
+    <p id="draftStatus" class="muted">Draft workspace status: not saved</p>
     <p id="weknoraStatus" class="muted">Chunk Studio status: direction locked; draft editor is tracked in #42/#43.</p>
     <div class="grid">
       <p class="muted">最近导出版本：<strong id="lastWeKnoraExportVersion">-</strong></p>
@@ -356,6 +374,7 @@ const remoteRagChunks = document.querySelector("#remoteRagChunks");
 const weknoraStatus = document.querySelector("#weknoraStatus");
 const lastWeKnoraExportVersion = document.querySelector("#lastWeKnoraExportVersion");
 const lastWeKnoraQualityGate = document.querySelector("#lastWeKnoraQualityGate");
+const draftStatus = document.querySelector("#draftStatus");
 const servicePrefix = location.pathname.includes("/admin") ? location.pathname.split("/admin")[0] : "";
 let lastPreview = null;
 let lastWeKnoraDryRun = null;
@@ -408,6 +427,7 @@ const defaultWeKnoraExport = {
 };
 fillBuilderTemplate(false);
 fillWeKnoraExportTemplate(false);
+fillDraftTemplate(false);
 document.querySelector("#saveToken").onclick = () => {
   localStorage.setItem("yiFlowKnowledgeAdminToken", tokenInput.value);
   output.textContent = "token saved locally";
@@ -456,6 +476,52 @@ function parseJSONField(selector, fallback) {
   if (!raw) return fallback;
   return JSON.parse(raw);
 }
+function fillDraftTemplate(force) {
+  const chunk = defaultChunks[0];
+  if (force || !document.querySelector("#draftVersion").value.trim()) {
+    document.querySelector("#draftVersion").value = todayVersion() + "-draft";
+  }
+  if (force || !document.querySelector("#draftChunkID").value.trim()) {
+    document.querySelector("#draftChunkID").value = chunk.chunk_id;
+  }
+  if (force || !document.querySelector("#draftChunkTitle").value.trim()) {
+    document.querySelector("#draftChunkTitle").value = chunk.title;
+  }
+  if (force || !document.querySelector("#draftChunkPath").value.trim()) {
+    document.querySelector("#draftChunkPath").value = chunk.path;
+  }
+  if (force || !document.querySelector("#draftChunkSource").value.trim()) {
+    document.querySelector("#draftChunkSource").value = chunk.source;
+  }
+  if (force || !document.querySelector("#draftChunkContent").value.trim()) {
+    document.querySelector("#draftChunkContent").value = chunk.content;
+  }
+}
+function draftVersion() {
+  return document.querySelector("#draftVersion").value.trim() || todayVersion() + "-draft";
+}
+function draftPayloadFromForm() {
+  return {
+    chunks: [
+      {
+        chunk_id: document.querySelector("#draftChunkID").value.trim(),
+        title: document.querySelector("#draftChunkTitle").value.trim(),
+        path: document.querySelector("#draftChunkPath").value.trim(),
+        source: document.querySelector("#draftChunkSource").value.trim(),
+        content: document.querySelector("#draftChunkContent").value.trim()
+      }
+    ],
+    prompts: [],
+    citations: defaultCitations
+  };
+}
+function fillDraftFromChunk(chunk) {
+  document.querySelector("#draftChunkID").value = chunk.chunk_id || "";
+  document.querySelector("#draftChunkTitle").value = chunk.title || "";
+  document.querySelector("#draftChunkPath").value = chunk.path || "";
+  document.querySelector("#draftChunkSource").value = chunk.source || "";
+  document.querySelector("#draftChunkContent").value = chunk.content || "";
+}
 async function showResponse(response) {
   const text = await response.text();
   output.textContent = response.status + "\n" + text;
@@ -478,6 +544,61 @@ document.querySelector("#dryRunWeKnoraExport").onclick = async () => {
 };
 document.querySelector("#publishWeKnoraExport").onclick = async () => {
   await runWeKnoraExport("/weknora/export-publish", true);
+};
+document.querySelector("#saveDraft").onclick = async () => {
+  try {
+    const version = draftVersion();
+    document.querySelector("#draftVersion").value = version;
+    const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(version), {
+      method: "PUT",
+      headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+      body: JSON.stringify(draftPayloadFromForm())
+    });
+    const text = await showResponse(response);
+    if (!response.ok) {
+      draftStatus.textContent = "Draft workspace status: save failed";
+      return;
+    }
+    const decoded = JSON.parse(text);
+    draftStatus.textContent = "Draft workspace status: saved · " + decoded.version + " · " + decoded.chunk_count + " chunks";
+  } catch (error) {
+    draftStatus.textContent = "Draft workspace status: save failed";
+    output.textContent = "保存草稿失败：\n" + String(error);
+  }
+};
+document.querySelector("#loadDraft").onclick = async () => {
+  const version = draftVersion();
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(version), {
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: load failed";
+    return;
+  }
+  const decoded = JSON.parse(text);
+  document.querySelector("#draftVersion").value = decoded.version;
+  if ((decoded.chunks || [])[0]) fillDraftFromChunk(decoded.chunks[0]);
+  draftStatus.textContent = "Draft workspace status: loaded · " + decoded.version + " · " + (decoded.chunks || []).length + " chunks";
+};
+document.querySelector("#previewDraft").onclick = async () => {
+  const version = draftVersion();
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(version) + "/preview?limit=12", {
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await response.text();
+  previewRaw.textContent = response.status + "\n" + text;
+  if (!response.ok) {
+    previewSummary.textContent = "草稿预览失败";
+    previewChunks.replaceChildren();
+    draftStatus.textContent = "Draft workspace status: preview failed";
+    output.textContent = "draft preview failed: " + response.status;
+    return;
+  }
+  lastPreview = JSON.parse(text);
+  renderPreview(lastPreview);
+  draftStatus.textContent = "Draft workspace status: preview loaded · " + version;
+  output.textContent = "draft preview loaded: " + response.status;
 };
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {

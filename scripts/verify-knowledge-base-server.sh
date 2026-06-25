@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 go test ./...
 go build -o /tmp/yi-flow-knowledge-base-verify ./cmd/server
 scripts/verify-chunk-studio-mainline.sh
+scripts/verify-chunk-studio-draft-workspace.sh
 scripts/verify-weknora-lightweight-replacement.sh
 scripts/verify-weknora-dataset-contract.sh
 scripts/verify-weknora-pilot-migration.sh

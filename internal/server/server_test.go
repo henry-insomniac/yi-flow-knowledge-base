@@ -16,8 +16,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -959,6 +961,209 @@ func TestAdminWriteEndpointsRequireBearerToken(t *testing.T) {
 	if buildPublishResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated build publish status=%d body=%s", buildPublishResponse.Code, buildPublishResponse.Body.String())
 	}
+
+	draftSave := httptest.NewRequest("PUT", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.draft", bytes.NewBufferString(`{"chunks":[]}`))
+	draftSave.Header.Set("Content-Type", "application/json")
+	draftSaveResponse := httptest.NewRecorder()
+	handler.ServeHTTP(draftSaveResponse, draftSave)
+	if draftSaveResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated draft save status=%d body=%s", draftSaveResponse.Code, draftSaveResponse.Body.String())
+	}
+}
+
+func TestAdminCanSaveAndPreviewDraftChunkWithoutPublishingLatest(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	requestBody := bytes.NewBufferString(`{
+	  "chunks": [
+	    {
+	      "chunk_id": "draft-topic-001",
+	      "title": "Draft Workspace Chunk",
+	      "path": "draft/workspace/topic",
+	      "source": "manual",
+	      "content": "Draft workspace content must be saved and previewed before latest is changed."
+	    }
+	  ],
+	  "prompts": [
+	    {
+	      "id": "draft-topic-check",
+	      "title": "Draft check",
+	      "question": "What does the draft workspace save?"
+	    }
+	  ],
+	  "citations": {
+	    "citations": [
+	      {
+	        "chunk_id": "draft-topic-001",
+	        "source": "Manual draft",
+	        "url": "https://yi-flow.com/knowledge-base/admin/"
+	      }
+	    ]
+	  }
+	}`)
+	saveDraft := httptest.NewRequest("PUT", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.draft", requestBody)
+	saveDraft.Header.Set("Authorization", "Bearer test-admin-token")
+	saveDraft.Header.Set("Content-Type", "application/json")
+	saveResponse := httptest.NewRecorder()
+	handler.ServeHTTP(saveResponse, saveDraft)
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	var saved struct {
+		KBID       string `json:"kb_id"`
+		Version    string `json:"version"`
+		Status     string `json:"status"`
+		ChunkCount int    `json:"chunk_count"`
+		CreatedAt  string `json:"created_at"`
+		UpdatedAt  string `json:"updated_at"`
+	}
+	if err := json.Unmarshal(saveResponse.Body.Bytes(), &saved); err != nil {
+		t.Fatalf("decode save draft response: %v", err)
+	}
+	if saved.KBID != "yi-flow-core" || saved.Version != "2026.06.26.draft" || saved.Status != "draft" || saved.ChunkCount != 1 {
+		t.Fatalf("saved draft summary = %+v", saved)
+	}
+	if saved.CreatedAt == "" || saved.UpdatedAt == "" {
+		t.Fatalf("saved draft timestamps missing: %+v", saved)
+	}
+
+	manifestResponse := httptest.NewRecorder()
+	handler.ServeHTTP(manifestResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/latest/manifest.json", nil))
+	if manifestResponse.Code != http.StatusNotFound {
+		t.Fatalf("draft save should not publish latest, latest status=%d body=%s", manifestResponse.Code, manifestResponse.Body.String())
+	}
+
+	readDraft := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.draft", nil)
+	readDraft.Header.Set("Authorization", "Bearer test-admin-token")
+	readResponse := httptest.NewRecorder()
+	handler.ServeHTTP(readResponse, readDraft)
+	if readResponse.Code != http.StatusOK {
+		t.Fatalf("read draft status=%d body=%s", readResponse.Code, readResponse.Body.String())
+	}
+
+	var draft struct {
+		KBID    string `json:"kb_id"`
+		Version string `json:"version"`
+		Status  string `json:"status"`
+		Chunks  []struct {
+			ChunkID string `json:"chunk_id"`
+			Title   string `json:"title"`
+			Path    string `json:"path"`
+			Source  string `json:"source"`
+			Content string `json:"content"`
+		} `json:"chunks"`
+		Prompts []struct {
+			ID       string `json:"id"`
+			Question string `json:"question"`
+		} `json:"prompts"`
+		Citations json.RawMessage `json:"citations"`
+		CreatedAt string          `json:"created_at"`
+		UpdatedAt string          `json:"updated_at"`
+	}
+	if err := json.Unmarshal(readResponse.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("decode draft: %v", err)
+	}
+	if draft.KBID != "yi-flow-core" || draft.Version != "2026.06.26.draft" || draft.Status != "draft" {
+		t.Fatalf("draft header = %+v", draft)
+	}
+	if len(draft.Chunks) != 1 {
+		t.Fatalf("draft chunk count=%d body=%s", len(draft.Chunks), readResponse.Body.String())
+	}
+	if draft.Chunks[0].Title != "Draft Workspace Chunk" || draft.Chunks[0].Path != "draft/workspace/topic" || draft.Chunks[0].Content == "" {
+		t.Fatalf("draft chunk = %+v", draft.Chunks[0])
+	}
+	if len(draft.Prompts) != 1 || draft.Prompts[0].Question != "What does the draft workspace save?" {
+		t.Fatalf("draft prompts = %+v", draft.Prompts)
+	}
+	if !bytes.Contains(draft.Citations, []byte("Manual draft")) {
+		t.Fatalf("draft citations missing source: %s", string(draft.Citations))
+	}
+
+	previewDraft := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.draft/preview?limit=1", nil)
+	previewDraft.Header.Set("Authorization", "Bearer test-admin-token")
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, previewDraft)
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("preview draft status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+
+	var preview struct {
+		KBID    string `json:"kb_id"`
+		Version string `json:"version"`
+		Status  string `json:"status"`
+		Latest  bool   `json:"latest"`
+		Chunks  []struct {
+			ChunkID string `json:"chunk_id"`
+			Title   string `json:"title"`
+			Path    string `json:"path"`
+			Source  string `json:"source"`
+			Content string `json:"content"`
+		} `json:"chunks"`
+	}
+	if err := json.Unmarshal(previewResponse.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if preview.KBID != "yi-flow-core" || preview.Version != "2026.06.26.draft" || preview.Status != "draft" || preview.Latest {
+		t.Fatalf("draft preview header = %+v", preview)
+	}
+	if len(preview.Chunks) != 1 {
+		t.Fatalf("draft preview chunk count=%d body=%s", len(preview.Chunks), previewResponse.Body.String())
+	}
+	if preview.Chunks[0].Title != "Draft Workspace Chunk" || preview.Chunks[0].Path != "draft/workspace/topic" || preview.Chunks[0].Content != "Draft workspace content must be saved and previewed before latest is changed." {
+		t.Fatalf("draft preview chunk = %+v", preview.Chunks[0])
+	}
+}
+
+func TestAdminDraftSaveLocalLatencySmoke(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	durations := make([]time.Duration, 0, 25)
+	for index := 0; index < 25; index++ {
+		suffix := string(rune('a' + index))
+		body := bytes.NewBufferString(`{
+		  "chunks": [
+		    {
+		      "chunk_id": "draft-latency-` + suffix + `",
+		      "title": "Draft latency smoke",
+		      "path": "draft/latency/` + suffix + `",
+		      "source": "manual",
+		      "content": "Draft latency smoke content ` + suffix + `."
+		    }
+		  ],
+		  "prompts": [],
+		  "citations": {"citations":[]}
+		}`)
+		request := httptest.NewRequest("PUT", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.latency."+suffix, body)
+		request.Header.Set("Authorization", "Bearer test-admin-token")
+		request.Header.Set("Content-Type", "application/json")
+
+		response := httptest.NewRecorder()
+		start := time.Now()
+		handler.ServeHTTP(response, request)
+		durations = append(durations, time.Since(start))
+		if response.Code != http.StatusCreated {
+			t.Fatalf("save draft %s status=%d body=%s", suffix, response.Code, response.Body.String())
+		}
+	}
+
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	p95Index := (len(durations)*95+99)/100 - 1
+	if p95 := durations[p95Index]; p95 > 500*time.Millisecond {
+		t.Fatalf("draft save p95=%s want <=500ms all=%v", p95, durations)
+	}
 }
 
 func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
@@ -983,6 +1188,15 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("自研 chunk 内容创建和管理后台")) {
 		t.Fatalf("admin page missing self-hosted chunk authoring description")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("保存草稿")) {
+		t.Fatalf("admin page missing draft save control")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("预览草稿 chunk")) {
+		t.Fatalf("admin page missing draft preview control")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("/drafts/")) {
+		t.Fatalf("admin page missing draft api usage")
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("/admin/api/kb/")) {
 		t.Fatalf("admin page missing admin api usage")
