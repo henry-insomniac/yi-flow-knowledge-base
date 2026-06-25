@@ -29,9 +29,11 @@ packageURL  = https://yi-flow.com/knowledge-base/kb/yi-flow-core/versions/<versi
 Authorization: Bearer <ADMIN_TOKEN>
 ```
 
-管理页内置“知识包构建器”，用于直接提交 chunks/prompts/citations JSON，由服务端生成 `chunks.sqlite`、`vector.index`、`knowledge-pack.zip`、`manifest.json`，签名后发布为 latest。
+管理页主流程已经切换为 RAGFlow：chunk 创建、文档解析和人工审核在 `https://rag.yi-flow.com` 完成；本服务通过 RAGFlow API 拉取已审核 dataset，生成 `chunks.sqlite`、`vector.index`、`knowledge-pack.zip`、`manifest.json`，签名后发布为 latest。
 
-管理页还内置“萌娘百科摘要知识包”构建器。该入口从萌娘百科公开 sitemap/API 读取主条目标题和 `exintro` 摘要，生成摘要型 chunks 与 `citations.json` 引用；它不会保存完整条目、不会复刻 infobox 数据集、不会下载图片，也不用于 AI 训练。生成内容必须按 `CC BY-NC-SA 3.0 CN` 署名并保留原页面 URL。
+RAGFlow 替换方案、dataset 规范、metadata 门禁和部署边界见 `docs/rag/ragflow-replacement.md`。
+
+旧版接口仍保留用于回滚和迁移。旧版“萌娘百科摘要知识包”构建入口从萌娘百科公开 sitemap/API 读取主条目标题和 `exintro` 摘要，生成摘要型 chunks 与 `citations.json` 引用；它不会保存完整条目、不会复刻 infobox 数据集、不会下载图片，也不用于 AI 训练。生成内容必须按 `CC BY-NC-SA 3.0 CN` 署名并保留原页面 URL。
 
 Moegirl 派生包的抓取、署名、隔离和审计规则见 `docs/moegirl-source-policy.md`。
 
@@ -43,6 +45,28 @@ KNOWLEDGE_PACK_SIGNING_KEY_FILE=/var/lib/yi-flow-knowledge-base/signing/knowledg
 ```
 
 构建并发布新版本：
+
+```bash
+curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/yi-flow-core/ragflow/export-dry-run" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "2026.06.25.001",
+    "dataset_id": "yi-flow-core",
+    "llm_recommended": ["Qwen3-4B-Q4_K_M"]
+  }'
+
+curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/yi-flow-core/ragflow/export-publish" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "2026.06.25.001",
+    "dataset_id": "yi-flow-core",
+    "llm_recommended": ["Qwen3-4B-Q4_K_M"]
+  }'
+```
+
+旧版直接 JSON 构建接口：
 
 ```bash
 curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/yi-flow-core/build-publish" \

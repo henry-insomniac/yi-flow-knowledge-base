@@ -1,0 +1,43 @@
+services:
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.example:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - oauth2-proxy
+    networks:
+      - ragflow_public
+      - ragflow_private
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    restart: unless-stopped
+    env_file:
+      - ./oauth2-proxy.env.example
+    networks:
+      - ragflow_private
+
+  # The RAGFlow service should come from the pinned upstream RAGFlow compose
+  # stack. Keep it on ragflow_private and do not publish its internal ports.
+  ragflow:
+    image: ${RAGFLOW_IMAGE:?set RAGFLOW_IMAGE}
+    restart: unless-stopped
+    expose:
+      - "80"
+      - "9380"
+    networks:
+      - ragflow_private
+
+networks:
+  ragflow_public:
+  ragflow_private:
+
+volumes:
+  caddy_data:
+  caddy_config:

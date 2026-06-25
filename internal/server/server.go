@@ -22,6 +22,7 @@ type Options struct {
 	MoegirlSitemapIndexURL     string
 	MoegirlPublicArticleOrigin string
 	RAGGateway                 RAGGatewayOptions
+	RAGFlow                    RAGFlowOptions
 }
 
 type Handler struct {
@@ -32,6 +33,7 @@ type Handler struct {
 	moegirlSitemapIndexURL     string
 	moegirlPublicArticleOrigin string
 	ragGateway                 *ragGateway
+	ragFlow                    *ragFlowClient
 }
 
 func NewHandler(options Options) (http.Handler, error) {
@@ -49,6 +51,10 @@ func NewHandler(options Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	ragFlow, err := newRAGFlowClient(options.RAGFlow)
+	if err != nil {
+		return nil, err
+	}
 	return &Handler{
 		storageDir:                 options.StorageDir,
 		adminToken:                 options.AdminToken,
@@ -57,6 +63,7 @@ func NewHandler(options Options) (http.Handler, error) {
 		moegirlSitemapIndexURL:     defaultString(options.MoegirlSitemapIndexURL, defaultMoegirlSitemapIndexURL),
 		moegirlPublicArticleOrigin: strings.TrimRight(defaultString(options.MoegirlPublicArticleOrigin, defaultMoegirlPublicArticleOrigin), "/"),
 		ragGateway:                 ragGateway,
+		ragFlow:                    ragFlow,
 	}, nil
 }
 
@@ -73,6 +80,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAdminRAGCompare(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/weknora/export-publish"):
 		h.handleWeKnoraExportPublish(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/ragflow/export-dry-run"):
+		h.handleRAGFlowExportDryRun(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/ragflow/export-publish"):
+		h.handleRAGFlowExportPublish(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/moegirl/build-publish"):
 		h.handleBuildAndPublishMoegirlSummary(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/build-publish"):
@@ -237,39 +248,42 @@ const adminPageHTML = `<!doctype html>
   </section>
 
   <section>
-    <h2>知识包构建器</h2>
-    <p class="muted">在这里直接编辑知识内容，服务端会自动生成 chunks.sqlite、vector.index、knowledge-pack.zip、manifest.json 和签名，并发布为 latest。</p>
+    <h2>RAGFlow 知识包发布</h2>
+    <p class="muted">chunk 创建、文档解析和人工审核统一在 RAGFlow 中完成；这里仅负责 dry-run、质量门禁、签名打包和发布 latest。</p>
     <div class="grid">
-      <label>Version <input id="builderVersion" placeholder="2026.06.22.001"></label>
-      <label>LLM recommended <input id="builderLLM" value="Qwen3-4B-Q4_K_M"></label>
+      <label>RAGFlow URL <input id="ragflowURL" value="https://rag.yi-flow.com" readonly></label>
+      <label>RAGFlow dataset ID <input id="ragflowDatasetID" value="yi-flow-core"></label>
+      <label>Version <input id="ragflowVersion" placeholder="2026.06.25.001"></label>
+      <label>LLM recommended <input id="ragflowLLM" value="Qwen3-4B-Q4_K_M"></label>
     </div>
-    <button id="fillBuilderTemplate" class="secondary">填入模板</button>
-    <button id="nextBuilderVersion" class="secondary">生成今日版本号</button>
-    <button id="importPreviewToBuilder" class="secondary">从当前预览导入</button>
-    <label>chunks JSON <textarea id="builderChunks" spellcheck="false"></textarea></label>
-    <label>prompts JSON <textarea id="builderPrompts" spellcheck="false"></textarea></label>
-    <label>citations JSON <textarea id="builderCitations" spellcheck="false"></textarea></label>
-    <button id="buildPublish">构建并发布 latest</button>
+    <button id="nextRagflowVersion" class="secondary">生成今日版本号</button>
+    <button id="dryRunRagflowExport" class="secondary">Dry-run 导出与质量门禁</button>
+    <button id="publishRagflowExport">通过门禁后发布 latest</button>
+    <p id="ragflowStatus" class="muted">Exporter status: idle</p>
+    <div class="grid">
+      <p class="muted">最近导出版本：<strong id="lastRagflowExportVersion">-</strong></p>
+      <p class="muted">最近质量门禁：<strong id="lastRagflowQualityGate">-</strong></p>
+    </div>
   </section>
 
-  <section>
-    <h2>萌娘百科摘要知识包</h2>
-    <p class="muted">从萌娘百科公开 sitemap/API 构建 FAQ 型 Knowledge Pack。默认发布到 moegirl-acgn-faq；仅保存高层摘要、分类和来源引用；遵守 CC BY-NC-SA 3.0 CN，不复现完整条目，不用于 AI 训练。</p>
-    <div class="grid">
-      <label>Version <input id="moegirlVersion" placeholder="2026.06.22.101"></label>
-      <label>Sitemap page limit <input id="moegirlLimit" type="number" min="1" max="3000" value="50"></label>
-    </div>
-    <label>Article titles（每行一个；留空则从 sitemap 取前 N 个主条目）<textarea id="moegirlTitles" spellcheck="false" placeholder="初音未来&#10;东方Project"></textarea></label>
-    <button id="buildMoegirl">构建萌娘百科摘要包并发布 latest</button>
-  </section>
-
-  <section>
-    <h2>WeKnora 导出发布</h2>
-    <p class="muted">把 WeKnora 中已人工审核的 chunk 转成签名 Knowledge Pack。每个 chunk 必须包含 reviewed:true；第三方内容必须保留来源 URL、许可和摘要型策略。</p>
-    <button id="fillWeKnoraExportTemplate" class="secondary">填入 WeKnora 模板</button>
-    <label>WeKnora export JSON <textarea id="weknoraExportJSON" spellcheck="false"></textarea></label>
-    <button id="publishWeKnoraExport">导出并发布 latest</button>
-  </section>
+  <div hidden>
+    <input id="builderVersion">
+    <input id="builderLLM" value="Qwen3-4B-Q4_K_M">
+    <textarea id="builderChunks" spellcheck="false"></textarea>
+    <textarea id="builderPrompts" spellcheck="false"></textarea>
+    <textarea id="builderCitations" spellcheck="false"></textarea>
+    <button id="fillBuilderTemplate" type="button"></button>
+    <button id="nextBuilderVersion" type="button"></button>
+    <button id="importPreviewToBuilder" type="button"></button>
+    <button id="buildPublish" type="button"></button>
+    <input id="moegirlVersion">
+    <input id="moegirlLimit" type="number" value="50">
+    <textarea id="moegirlTitles" spellcheck="false"></textarea>
+    <button id="buildMoegirl" type="button"></button>
+    <button id="fillWeKnoraExportTemplate" type="button"></button>
+    <textarea id="weknoraExportJSON" spellcheck="false"></textarea>
+    <button id="publishWeKnoraExport" type="button"></button>
+  </div>
 
   <section>
     <h2>手动上传版本</h2>
@@ -347,8 +361,12 @@ const localRagStatus = document.querySelector("#localRagStatus");
 const remoteRagStatus = document.querySelector("#remoteRagStatus");
 const localRagChunks = document.querySelector("#localRagChunks");
 const remoteRagChunks = document.querySelector("#remoteRagChunks");
+const ragflowStatus = document.querySelector("#ragflowStatus");
+const lastRagflowExportVersion = document.querySelector("#lastRagflowExportVersion");
+const lastRagflowQualityGate = document.querySelector("#lastRagflowQualityGate");
 const servicePrefix = location.pathname.includes("/admin") ? location.pathname.split("/admin")[0] : "";
 let lastPreview = null;
+let lastRagflowDryRun = null;
 tokenInput.value = localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
 const defaultChunks = [
   {
@@ -456,6 +474,15 @@ document.querySelector("#fillWeKnoraExportTemplate").onclick = () => fillWeKnora
 document.querySelector("#nextBuilderVersion").onclick = () => {
   document.querySelector("#builderVersion").value = todayVersion();
 };
+document.querySelector("#nextRagflowVersion").onclick = () => {
+  document.querySelector("#ragflowVersion").value = todayVersion();
+};
+document.querySelector("#dryRunRagflowExport").onclick = async () => {
+  await runRagflowExport("/ragflow/export-dry-run", false);
+};
+document.querySelector("#publishRagflowExport").onclick = async () => {
+  await runRagflowExport("/ragflow/export-publish", true);
+};
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {
     output.textContent = "请先查看知识包内容，再导入到构建器。";
@@ -480,6 +507,42 @@ function fillWeKnoraExportTemplate(force) {
   if (force || !document.querySelector("#weknoraExportJSON").value.trim()) {
     const template = { ...defaultWeKnoraExport, version: todayVersion() };
     document.querySelector("#weknoraExportJSON").value = pretty(template);
+  }
+}
+async function runRagflowExport(path, publish) {
+  try {
+    const body = {
+      version: document.querySelector("#ragflowVersion").value.trim() || todayVersion(),
+      dataset_id: document.querySelector("#ragflowDatasetID").value.trim() || kbID(),
+      llm_recommended: document.querySelector("#ragflowLLM").value.split(",").map((item) => item.trim()).filter(Boolean)
+    };
+    if (publish && (!lastRagflowDryRun || lastRagflowDryRun.version !== body.version || lastRagflowDryRun.dataset_id !== body.dataset_id || lastRagflowDryRun.quality_status !== "passed")) {
+      output.textContent = "请先运行同版本、同 dataset 的 dry-run，并确认质量门禁通过。";
+      ragflowStatus.textContent = "Exporter status: waiting for dry-run";
+      return;
+    }
+    const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + path, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const text = await showResponse(response);
+    if (!response.ok) {
+      ragflowStatus.textContent = "Exporter status: failed";
+      lastRagflowQualityGate.textContent = "failed";
+      return;
+    }
+    const decoded = JSON.parse(text);
+    lastRagflowDryRun = decoded;
+    ragflowStatus.textContent = "Exporter status: " + (publish ? "published" : "dry-run passed") + " · " + decoded.chunk_count + " chunks";
+    lastRagflowExportVersion.textContent = decoded.version || body.version;
+    lastRagflowQualityGate.textContent = decoded.quality_status || "passed";
+    document.querySelector("#previewVersion").value = decoded.version || body.version;
+    document.querySelector("#rollbackVersion").value = decoded.version || body.version;
+  } catch (error) {
+    ragflowStatus.textContent = "Exporter status: failed";
+    lastRagflowQualityGate.textContent = "failed";
+    output.textContent = "RAGFlow 导出失败：\n" + String(error);
   }
 }
 document.querySelector("#buildPublish").onclick = async () => {

@@ -1,0 +1,22 @@
+rag.yi-flow.com {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "SAMEORIGIN"
+	}
+
+	request_body {
+		max_size 1024MB
+	}
+
+	reverse_proxy oauth2-proxy:4180 {
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+			dial_timeout 15s
+		}
+	}
+}

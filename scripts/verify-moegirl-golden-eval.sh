@@ -66,7 +66,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
     report = json.load(handle)
 
 checks = {
-    "top5_hit_rate": 0.85,
+    "top5_hit_rate": 0.90,
     "citation_rate": 0.95,
     "refusal_pass_rate": 0.90,
 }
