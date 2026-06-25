@@ -1422,6 +1422,75 @@ func TestAdminDraftChunkSearchLocalLatencySmoke(t *testing.T) {
 	}
 }
 
+func TestAdminDraftChunkUpdateThousandChunkLocalLatencySmoke(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	chunks := make([]map[string]any, 0, 1000)
+	for index := 0; index < 1000; index++ {
+		chunks = append(chunks, map[string]any{
+			"chunk_id":      "update-latency-chunk-" + strconv.Itoa(index),
+			"title":         "Update Latency Chunk " + strconv.Itoa(index),
+			"path":          "draft/update-latency/" + strconv.Itoa(index),
+			"source":        "manual",
+			"content":       "Update latency baseline content with enough length " + strconv.Itoa(index),
+			"review_status": "approved",
+		})
+	}
+	body, err := json.Marshal(map[string]any{
+		"chunks":    chunks,
+		"prompts":   []any{},
+		"citations": map[string]any{"citations": []any{}},
+	})
+	if err != nil {
+		t.Fatalf("encode update latency draft: %v", err)
+	}
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.update-latency", string(body))
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save update latency draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	durations := make([]time.Duration, 0, 25)
+	for index := 0; index < 25; index++ {
+		payload := map[string]any{
+			"chunk_id":      "update-latency-chunk-500",
+			"title":         "Update Latency Chunk 500",
+			"path":          "draft/update-latency/500",
+			"source":        "manual",
+			"content":       "Updated latency content for 1000 chunk draft pass " + strconv.Itoa(index),
+			"review_status": "approved",
+		}
+		payloadBytes, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("encode update payload: %v", err)
+		}
+		request := httptest.NewRequest("PUT", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.update-latency/chunks/update-latency-chunk-500", bytes.NewReader(payloadBytes))
+		request.Header.Set("Authorization", "Bearer test-admin-token")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		start := time.Now()
+		handler.ServeHTTP(response, request)
+		durations = append(durations, time.Since(start))
+		if response.Code != http.StatusOK {
+			t.Fatalf("update chunk status=%d body=%s", response.Code, response.Body.String())
+		}
+		if !bytes.Contains(response.Body.Bytes(), []byte(`"chunk_count":1000`)) {
+			t.Fatalf("update response should preserve 1000 chunks: %s", response.Body.String())
+		}
+	}
+
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	p95Index := (len(durations)*95+99)/100 - 1
+	if p95 := durations[p95Index]; p95 > 500*time.Millisecond {
+		t.Fatalf("1000 chunk single update p95=%s want <=500ms all=%v", p95, durations)
+	}
+}
+
 func TestAdminDraftChunkCitationMetadataAndSourceAudit(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),

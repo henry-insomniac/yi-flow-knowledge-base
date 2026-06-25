@@ -4,13 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-go test ./internal/server -run 'TestAdminDraftChunkListPaginatesThousandChunks|TestAdminDraftBulkImportValidationReturnsFieldErrors|TestAdminPageIsServedByTheKnowledgeBaseService' -count=1
+go test ./internal/server -run 'TestAdminDraftChunkListPaginatesThousandChunks|TestAdminDraftChunkUpdateThousandChunkLocalLatencySmoke|TestAdminDraftBulkImportValidationReturnsFieldErrors|TestAdminPageIsServedByTheKnowledgeBaseService' -count=1
 scripts/smoke-chunk-studio-production.sh
 
 required_terms=(
   "limit"
   "offset"
   "next_offset"
+  "TestAdminDraftChunkUpdateThousandChunkLocalLatencySmoke"
   "field_errors"
   "@media (max-width: 720px)"
   "preserveUnsavedDraftOnError"
