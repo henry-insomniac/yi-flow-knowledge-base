@@ -198,6 +198,196 @@ func TestAdminCanBuildMoegirlSummaryKnowledgePackFromPageSummaries(t *testing.T)
 	}
 }
 
+func TestAdminCanImportMoegirlFAQDraftForManualReviewWithoutPublishing(t *testing.T) {
+	moegirl := fakeMoegirlSource(t)
+	defer moegirl.Close()
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:                 t.TempDir(),
+		AdminToken:                 "test-admin-token",
+		MoegirlAPIURL:              moegirl.URL + "/api.php",
+		MoegirlSitemapIndexURL:     moegirl.URL + "/sitemap-index.xml",
+		MoegirlPublicArticleOrigin: "https://zh.moegirl.org.cn",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	saveCore := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.core-clean", `{
+	  "chunks": [{
+	    "chunk_id": "core-clean",
+	    "title": "Core clean",
+	    "path": "core/clean",
+	    "source": "yi-flow-core",
+	    "content": "Core draft stays isolated while Moegirl FAQ draft import runs."
+	  }],
+	  "prompts": [],
+	  "citations": {"citations":[]}
+	}`)
+	if saveCore.Code != http.StatusCreated {
+		t.Fatalf("save core draft status=%d body=%s", saveCore.Code, saveCore.Body.String())
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/moegirl-acgn-faq/moegirl/import-draft", bytes.NewBufferString(`{
+	  "version": "2026.06.26.moegirl-draft",
+	  "titles": ["初音未来"]
+	}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("moegirl import draft status=%d body=%s", response.Code, response.Body.String())
+	}
+	var imported struct {
+		KBID          string `json:"kb_id"`
+		Version       string `json:"version"`
+		Latest        bool   `json:"latest"`
+		ChunkCount    int    `json:"chunk_count"`
+		PromptCount   int    `json:"prompt_count"`
+		CitationCount int    `json:"citation_count"`
+		ReviewReport  struct {
+			FullMirrorSuspectCount int `json:"full_mirror_suspect_count"`
+			Target                 struct {
+				AcceptedPagesRequired   int  `json:"accepted_pages_required"`
+				FAQChunksRequired       int  `json:"faq_chunks_required"`
+				GoldenQuestionsRequired int  `json:"golden_questions_required"`
+				ReadyForHITL            bool `json:"ready_for_hitl"`
+			} `json:"target"`
+		} `json:"review_report"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &imported); err != nil {
+		t.Fatalf("decode import response: %v", err)
+	}
+	if imported.KBID != "moegirl-acgn-faq" || imported.Version != "2026.06.26.moegirl-draft" || imported.Latest || imported.ChunkCount != 3 || imported.PromptCount != 3 || imported.CitationCount != 3 {
+		t.Fatalf("unexpected import response = %+v body=%s", imported, response.Body.String())
+	}
+	if imported.ReviewReport.FullMirrorSuspectCount != 0 ||
+		imported.ReviewReport.Target.AcceptedPagesRequired != 300 ||
+		imported.ReviewReport.Target.FAQChunksRequired != 900 ||
+		imported.ReviewReport.Target.GoldenQuestionsRequired != 50 ||
+		imported.ReviewReport.Target.ReadyForHITL {
+		t.Fatalf("unexpected review target = %+v", imported.ReviewReport)
+	}
+
+	listChunks := httptest.NewRequest("GET", "/admin/api/kb/moegirl-acgn-faq/drafts/2026.06.26.moegirl-draft/chunks", nil)
+	listChunks.Header.Set("Authorization", "Bearer test-admin-token")
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, listChunks)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list imported chunks status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	var listed struct {
+		Chunks []struct {
+			ChunkID          string `json:"chunk_id"`
+			ReviewStatus     string `json:"review_status"`
+			CitationURL      string `json:"citation_url"`
+			License          string `json:"license"`
+			SourcePolicy     string `json:"source_policy"`
+			SourceRevisionID string `json:"source_revision_id"`
+			SourcePageID     string `json:"source_page_id"`
+		} `json:"chunks"`
+	}
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode imported chunks: %v", err)
+	}
+	if len(listed.Chunks) != 3 || listed.Chunks[0].ReviewStatus != "needs_review" || listed.Chunks[0].CitationURL != "https://zh.moegirl.org.cn/初音未来" || listed.Chunks[0].License != "CC BY-NC-SA 3.0 CN" || !strings.Contains(listed.Chunks[0].SourcePolicy, "no full-article mirror") || listed.Chunks[0].SourceRevisionID != "8535826" || listed.Chunks[0].SourcePageID != "1399" {
+		t.Fatalf("imported chunk metadata = %+v", listed.Chunks)
+	}
+
+	update := httptest.NewRequest("PUT", "/admin/api/kb/moegirl-acgn-faq/drafts/2026.06.26.moegirl-draft/chunks/"+listed.Chunks[0].ChunkID, bytes.NewBufferString(`{
+	  "chunk_id": "`+listed.Chunks[0].ChunkID+`",
+	  "title": "初音未来 · 人工审核 FAQ",
+	  "path": "moegirl/faq/初音未来/manual",
+	  "source": "萌娘百科 (Moegirlpedia)",
+	  "content": "人工审核后的初音未来 FAQ 摘要，保留来源、许可和 no full-article mirror 边界。",
+	  "review_status": "approved",
+	  "citation_url": "https://zh.moegirl.org.cn/初音未来",
+	  "citation_title": "初音未来",
+	  "source_name": "萌娘百科 (Moegirlpedia)",
+	  "license": "CC BY-NC-SA 3.0 CN",
+	  "source_policy": "summary-only with visible attribution; no full-article mirror; no AI training",
+	  "source_revision_id": "8535826",
+	  "source_page_id": "1399"
+	}`))
+	update.Header.Set("Authorization", "Bearer test-admin-token")
+	update.Header.Set("Content-Type", "application/json")
+	updateResponse := httptest.NewRecorder()
+	handler.ServeHTTP(updateResponse, update)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update imported chunk status=%d body=%s", updateResponse.Code, updateResponse.Body.String())
+	}
+
+	latestPreview := httptest.NewRecorder()
+	handler.ServeHTTP(latestPreview, httptest.NewRequest("GET", "/kb/moegirl-acgn-faq/latest/preview", nil))
+	if latestPreview.Code != http.StatusNotFound {
+		t.Fatalf("import draft should not publish latest, status=%d body=%s", latestPreview.Code, latestPreview.Body.String())
+	}
+
+	auditCore := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.core-clean/source-audit", nil)
+	auditCore.Header.Set("Authorization", "Bearer test-admin-token")
+	auditResponse := httptest.NewRecorder()
+	handler.ServeHTTP(auditResponse, auditCore)
+	if auditResponse.Code != http.StatusOK {
+		t.Fatalf("core source audit status=%d body=%s", auditResponse.Code, auditResponse.Body.String())
+	}
+	if strings.Contains(auditResponse.Body.String(), `"violations":[{`) {
+		t.Fatalf("core source audit should stay clean after moegirl import: %s", auditResponse.Body.String())
+	}
+}
+
+func TestAdminMoegirlDraftReviewFlagsFullArticleMirrorSuspects(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	longMirror := strings.Repeat("疑似完整条目内容，包含大量连续正文。", 120)
+	saveResponse := saveDraftJSON(t, handler, "moegirl-acgn-faq", "2026.06.26.moegirl-review", `{
+	  "chunks": [{
+	    "chunk_id": "moegirl-review-suspect",
+	    "title": "疑似全文镜像",
+	    "path": "moegirl/faq/疑似全文镜像",
+	    "source": "萌娘百科 (Moegirlpedia)",
+	    "content": "`+longMirror+`",
+	    "citation_url": "https://zh.moegirl.org.cn/疑似全文镜像",
+	    "citation_title": "疑似全文镜像",
+	    "source_name": "萌娘百科 (Moegirlpedia)",
+	    "license": "CC BY-NC-SA 3.0 CN",
+	    "source_policy": "summary/FAQ only; no full article mirror; no AI training",
+	    "source_revision_id": "8888",
+	    "source_page_id": "9999"
+	  }],
+	  "prompts": [],
+	  "citations": {"citations":[]}
+	}`)
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save review draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	request := httptest.NewRequest("GET", "/admin/api/kb/moegirl-acgn-faq/drafts/2026.06.26.moegirl-review/moegirl-review", nil)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("moegirl review status=%d body=%s", response.Code, response.Body.String())
+	}
+	var report struct {
+		FullMirrorSuspectCount int      `json:"full_mirror_suspect_count"`
+		FullMirrorSuspectIDs   []string `json:"full_mirror_suspect_chunk_ids"`
+		MissingMetadataCount   int      `json:"missing_metadata_count"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+		t.Fatalf("decode moegirl review: %v", err)
+	}
+	if report.FullMirrorSuspectCount != 1 || len(report.FullMirrorSuspectIDs) != 1 || report.FullMirrorSuspectIDs[0] != "moegirl-review-suspect" || report.MissingMetadataCount != 0 {
+		t.Fatalf("unexpected moegirl review report = %+v body=%s", report, response.Body.String())
+	}
+}
+
 func TestAdminRejectsMoegirlBuildPublishOutsideMoegirlNamespace(t *testing.T) {
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

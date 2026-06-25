@@ -27,6 +27,9 @@ const (
 	maxMoegirlPagesPerBuild           = 3000
 	defaultMoegirlSitemapLimit        = 50
 	maxMoegirlSummaryRunes            = 260
+	moegirlHITLAcceptedPagesTarget    = 300
+	moegirlHITLFAQChunksTarget        = 900
+	moegirlHITLGoldenQuestionsTarget  = 50
 )
 
 type moegirlBuildPublishRequest struct {
@@ -131,11 +134,129 @@ type moegirlBuildReport struct {
 	MissingMetadataCount int     `json:"missing_metadata_count"`
 }
 
+type moegirlDraftReviewReport struct {
+	KBID                      string                   `json:"kb_id"`
+	Version                   string                   `json:"version"`
+	ChunkCount                int                      `json:"chunk_count"`
+	PromptCount               int                      `json:"prompt_count"`
+	CitationCount             int                      `json:"citation_count"`
+	MissingMetadataCount      int                      `json:"missing_metadata_count"`
+	FullMirrorSuspectCount    int                      `json:"full_mirror_suspect_count"`
+	FullMirrorSuspectChunkIDs []string                 `json:"full_mirror_suspect_chunk_ids"`
+	Target                    moegirlDraftReviewTarget `json:"target"`
+}
+
+type moegirlDraftReviewTarget struct {
+	AcceptedPagesRequired   int  `json:"accepted_pages_required"`
+	FAQChunksRequired       int  `json:"faq_chunks_required"`
+	GoldenQuestionsRequired int  `json:"golden_questions_required"`
+	AcceptedPages           int  `json:"accepted_pages"`
+	FAQChunks               int  `json:"faq_chunks"`
+	GoldenQuestions         int  `json:"golden_questions"`
+	ReadyForHITL            bool `json:"ready_for_hitl"`
+}
+
 type moegirlSkippedPage struct {
 	Title      string `json:"title"`
 	Reason     string `json:"reason"`
 	PageID     int    `json:"page_id,omitempty"`
 	RevisionID string `json:"revision_id,omitempty"`
+}
+
+func (h *Handler) handleImportMoegirlDraft(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	kbID, ok := strings.CutPrefix(r.URL.Path, "/admin/api/kb/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	kbID, ok = strings.CutSuffix(kbID, "/moegirl/import-draft")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	kbID, err := safeComponent(kbID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !isMoegirlKnowledgePackID(kbID) {
+		http.Error(w, fmt.Sprintf("kb_id %q cannot use moegirl draft import; expected moegirl-* knowledge pack", kbID), http.StatusBadRequest)
+		return
+	}
+
+	var payload moegirlBuildPublishRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(&payload); err != nil {
+		http.Error(w, "invalid json body", http.StatusBadRequest)
+		return
+	}
+	version, err := safeComponent(payload.Version)
+	if err != nil {
+		http.Error(w, "invalid version", http.StatusBadRequest)
+		return
+	}
+
+	buildPayload, crawlReport, err := h.moegirlBuildPayload(r.Context(), kbID, payload)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	draft, err := h.buildDraftDocument(kbID, version, draftSaveRequest{
+		Chunks:    buildPayload.Chunks,
+		Prompts:   buildPayload.Prompts,
+		Citations: buildPayload.Citations,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.writeDraft(draft); err != nil {
+		http.Error(w, "write moegirl draft failed", http.StatusInternalServerError)
+		return
+	}
+	reviewReport := moegirlDraftReviewReportFor(draft, crawlReport.AcceptedPages)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"kb_id":          draft.KBID,
+		"version":        draft.Version,
+		"status":         draft.Status,
+		"latest":         false,
+		"chunk_count":    len(draft.Chunks),
+		"prompt_count":   len(draft.Prompts),
+		"citation_count": reviewReport.CitationCount,
+		"crawl_report":   crawlReport,
+		"build_report":   moegirlBuildReportFromPayload(buildPayload, crawlReport),
+		"review_report":  reviewReport,
+	})
+}
+
+func (h *Handler) handleMoegirlDraftReview(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	kbID, version, ok, err := parseAdminDraftPath(r.URL.Path, "/moegirl-review")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if !isMoegirlKnowledgePackID(kbID) {
+		http.Error(w, fmt.Sprintf("kb_id %q cannot use moegirl draft review", kbID), http.StatusBadRequest)
+		return
+	}
+	draft, err := h.readDraft(kbID, version)
+	if err != nil {
+		writeDraftReadError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, moegirlDraftReviewReportFor(draft, 0))
 }
 
 func (h *Handler) handleBuildAndPublishMoegirlSummary(w http.ResponseWriter, r *http.Request) {
@@ -700,7 +821,7 @@ func moegirlFAQChunksFromPage(page moegirlAPIPage, articleOrigin string, aliases
 	aliasLine := moegirlAliasLine(aliases)
 
 	return []knowledgePackBuildChunk{
-		moegirlFAQChunk(page, "faq_overview", "是什么", compactMoegirlContentParts([]string{
+		moegirlFAQChunk(page, publicURL, categories, "faq_overview", "是什么", compactMoegirlContentParts([]string{
 			"【问题】" + page.Title + "是什么？",
 			aliasLine,
 			"【回答依据】" + summary,
@@ -709,7 +830,7 @@ func moegirlFAQChunksFromPage(page moegirlAPIPage, articleOrigin string, aliases
 			moegirlSourceLine(publicURL),
 			moegirlLicenseLine(),
 		})),
-		moegirlFAQChunk(page, "faq_identity", "身份来源", compactMoegirlContentParts([]string{
+		moegirlFAQChunk(page, publicURL, categories, "faq_identity", "身份来源", compactMoegirlContentParts([]string{
 			"【问题】" + page.Title + "来自哪里，如何定位？",
 			"【实体】" + page.Title,
 			aliasLine,
@@ -720,7 +841,7 @@ func moegirlFAQChunksFromPage(page moegirlAPIPage, articleOrigin string, aliases
 			moegirlSourceLine(publicURL),
 			moegirlLicenseLine(),
 		})),
-		moegirlFAQChunk(page, "faq_facts", "核心事实", compactMoegirlContentParts([]string{
+		moegirlFAQChunk(page, publicURL, categories, "faq_facts", "核心事实", compactMoegirlContentParts([]string{
 			"【问题】" + page.Title + "有哪些核心事实？",
 			aliasLine,
 			"【事实依据】" + summary,
@@ -744,15 +865,25 @@ func compactMoegirlContentParts(parts []string) []string {
 	return result
 }
 
-func moegirlFAQChunk(page moegirlAPIPage, faqType string, pathName string, contentParts []string) knowledgePackBuildChunk {
+func moegirlFAQChunk(page moegirlAPIPage, publicURL string, categories []string, faqType string, pathName string, contentParts []string) knowledgePackBuildChunk {
 	content := append([]string{"【FAQ类型】" + faqType}, contentParts...)
 	content = append(content, "【引用】chunk_id="+moegirlFAQChunkID(page, faqType))
+	tags := normalizeStringList(append([]string{"moegirl", "faq", faqType}, categories...))
 	return knowledgePackBuildChunk{
-		ChunkID: moegirlFAQChunkID(page, faqType),
-		Title:   page.Title + " · " + faqType,
-		Path:    "moegirl/faq/" + slugComponent(page.Title) + "/" + slugComponent(pathName),
-		Source:  moegirlSourceName,
-		Content: strings.Join(content, "\n"),
+		ChunkID:          moegirlFAQChunkID(page, faqType),
+		Title:            page.Title + " · " + faqType,
+		Path:             "moegirl/faq/" + slugComponent(page.Title) + "/" + slugComponent(pathName),
+		Source:           moegirlSourceName,
+		Content:          strings.Join(content, "\n"),
+		Tags:             tags,
+		ReviewStatus:     "needs_review",
+		CitationURL:      publicURL,
+		CitationTitle:    page.Title,
+		SourceName:       moegirlSourceName,
+		License:          moegirlLicense,
+		SourcePolicy:     moegirlSourcePolicy,
+		SourceRevisionID: revisionIDString(page.LastRevID),
+		SourcePageID:     strconv.Itoa(page.PageID),
 	}
 }
 
@@ -809,6 +940,102 @@ func moegirlBuildReportFromPayload(payload buildPublishRequest, crawlReport moeg
 		DuplicateChunkRate:   duplicateChunkRate(payload.Chunks),
 		MissingMetadataCount: missingMetadataCount,
 	}
+}
+
+func moegirlDraftReviewReportFor(draft draftDocument, acceptedPages int) moegirlDraftReviewReport {
+	if acceptedPages == 0 {
+		acceptedPages = moegirlAcceptedPageCountFromDraft(draft)
+	}
+	citationCount := moegirlDraftCitationCount(draft)
+	missingMetadata := moegirlDraftMissingMetadataCount(draft.Chunks)
+	fullMirrorSuspects := moegirlFullMirrorSuspectChunkIDs(draft.Chunks)
+	target := moegirlDraftReviewTarget{
+		AcceptedPagesRequired:   moegirlHITLAcceptedPagesTarget,
+		FAQChunksRequired:       moegirlHITLFAQChunksTarget,
+		GoldenQuestionsRequired: moegirlHITLGoldenQuestionsTarget,
+		AcceptedPages:           acceptedPages,
+		FAQChunks:               len(draft.Chunks),
+		GoldenQuestions:         len(draft.Prompts),
+	}
+	target.ReadyForHITL = target.AcceptedPages >= target.AcceptedPagesRequired &&
+		target.FAQChunks >= target.FAQChunksRequired &&
+		target.GoldenQuestions >= target.GoldenQuestionsRequired &&
+		missingMetadata == 0 &&
+		len(fullMirrorSuspects) == 0
+	return moegirlDraftReviewReport{
+		KBID:                      draft.KBID,
+		Version:                   draft.Version,
+		ChunkCount:                len(draft.Chunks),
+		PromptCount:               len(draft.Prompts),
+		CitationCount:             citationCount,
+		MissingMetadataCount:      missingMetadata,
+		FullMirrorSuspectCount:    len(fullMirrorSuspects),
+		FullMirrorSuspectChunkIDs: fullMirrorSuspects,
+		Target:                    target,
+	}
+}
+
+func moegirlAcceptedPageCountFromDraft(draft draftDocument) int {
+	seen := map[string]bool{}
+	for _, chunk := range draft.Chunks {
+		pageID := strings.TrimSpace(chunk.SourcePageID)
+		if pageID == "" {
+			continue
+		}
+		seen[pageID] = true
+	}
+	if len(seen) > 0 {
+		return len(seen)
+	}
+
+	var citations moegirlCitationFile
+	if err := json.Unmarshal(draft.Citations, &citations); err != nil {
+		return 0
+	}
+	for _, row := range citations.CrawlManifest {
+		if row.PageID != 0 {
+			seen[strconv.Itoa(row.PageID)] = true
+		}
+	}
+	return len(seen)
+}
+
+func moegirlDraftCitationCount(draft draftDocument) int {
+	citationCount, _ := moegirlCitationMetrics(draft.Citations)
+	if citationCount > 0 {
+		return citationCount
+	}
+	count := 0
+	for _, chunk := range draft.Chunks {
+		if chunkHasCitationMetadata(chunk) {
+			count++
+		}
+	}
+	return count
+}
+
+func moegirlDraftMissingMetadataCount(chunks []knowledgePackBuildChunk) int {
+	missing := 0
+	for index, chunk := range chunks {
+		if err := validateMoegirlChunkSourceMetadata(index, chunk); err != nil {
+			missing++
+		}
+	}
+	return missing
+}
+
+func moegirlFullMirrorSuspectChunkIDs(chunks []knowledgePackBuildChunk) []string {
+	suspects := []string{}
+	for _, chunk := range chunks {
+		content := strings.TrimSpace(chunk.Content)
+		contentLength := len([]rune(content))
+		lineCount := strings.Count(content, "\n") + 1
+		if contentLength > maxMoegirlSummaryRunes*4 || lineCount > 30 {
+			suspects = append(suspects, chunk.ChunkID)
+		}
+	}
+	sort.Strings(suspects)
+	return suspects
 }
 
 func moegirlCitationMetrics(raw json.RawMessage) (int, int) {

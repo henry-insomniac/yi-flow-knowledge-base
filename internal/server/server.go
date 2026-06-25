@@ -72,6 +72,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAdminPage(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/source-audit"):
 		h.handleDraftSourceAudit(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/moegirl-review"):
+		h.handleMoegirlDraftReview(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/quality-gates"):
 		h.handleDraftQualityGates(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/build-dry-run"):
@@ -112,6 +114,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleWeKnoraExportDryRun(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/weknora/export-publish"):
 		h.handleWeKnoraExportPublish(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/moegirl/import-draft"):
+		h.handleImportMoegirlDraft(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/moegirl/build-publish"):
 		h.handleBuildAndPublishMoegirlSummary(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.HasSuffix(r.URL.Path, "/build-publish"):
@@ -284,6 +288,15 @@ const adminPageHTML = `<!doctype html>
       <p class="muted"><strong>Quality gates</strong><br>发布前检查缺字段、重复、污染、citation 覆盖和 golden eval。</p>
       <p class="muted"><strong>Signed package</strong><br>继续生成 manifest.json、knowledge-pack.zip、chunks.sqlite、citations.json 和 prompts.json。</p>
     </div>
+    <h3>Moegirl FAQ import</h3>
+    <div class="grid">
+      <label>Moegirl draft version <input id="moegirlDraftVersion" placeholder="2026.06.26.moegirl-draft"></label>
+      <label>Moegirl import limit <input id="moegirlDraftLimit" type="number" min="1" max="3000" value="50"></label>
+    </div>
+    <label>Moegirl titles <textarea id="moegirlDraftTitles" spellcheck="false" placeholder="初音未来&#10;东方Project"></textarea></label>
+    <button id="importMoegirlDraft" class="secondary" type="button">导入 Moegirl FAQ draft</button>
+    <button id="reviewMoegirlDraft" class="secondary" type="button">检查 Moegirl draft</button>
+    <div id="moegirlDraftImportReport" class="chunk-list"></div>
     <div class="grid">
       <label>Draft version <input id="draftVersion" placeholder="2026.06.26.draft"></label>
       <label>Chunk ID <input id="draftChunkID" placeholder="draft-topic-001"></label>
@@ -986,6 +999,12 @@ document.querySelector("#runDraftBuildDryRun").onclick = async () => {
 document.querySelector("#publishDraftLatest").onclick = async () => {
   await publishDraftLatest();
 };
+document.querySelector("#importMoegirlDraft").onclick = async () => {
+  await importMoegirlDraft();
+};
+document.querySelector("#reviewMoegirlDraft").onclick = async () => {
+  await reviewMoegirlDraft();
+};
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {
     output.textContent = "请先查看知识包内容，再导入到构建器。";
@@ -1511,6 +1530,80 @@ async function publishDraftLatest() {
   document.querySelector("#previewVersion").value = decoded.version || "";
   document.querySelector("#rollbackVersion").value = decoded.version || "";
   draftStatus.textContent = "Draft workspace status: published latest · " + decoded.version + " · " + (decoded.content_hash || "");
+}
+async function importMoegirlDraft() {
+  const version = document.querySelector("#moegirlDraftVersion").value.trim() || draftVersion();
+  const rawTitles = document.querySelector("#moegirlDraftTitles").value;
+  const titles = rawTitles.split(/[\n,，]/).map((item) => item.trim()).filter(Boolean);
+  const body = {
+    version,
+    titles,
+    limit: Math.max(1, Math.min(3000, Number(document.querySelector("#moegirlDraftLimit").value || 50)))
+  };
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(moegirlKBID()) + "/moegirl/import-draft", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: moegirl import failed";
+    return;
+  }
+  const decoded = JSON.parse(text);
+  document.querySelector("#kbID").value = decoded.kb_id || moegirlKBID();
+  document.querySelector("#draftVersion").value = decoded.version || version;
+  renderMoegirlDraftReport(decoded.review_report || {});
+  await loadDraftChunkList();
+  await loadDraftPromptList();
+  draftStatus.textContent = "Draft workspace status: moegirl draft imported · " + decoded.chunk_count + " chunks";
+}
+async function reviewMoegirlDraft() {
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(moegirlKBID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/moegirl-review", {
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: moegirl review failed";
+    return;
+  }
+  renderMoegirlDraftReport(JSON.parse(text));
+  draftStatus.textContent = "Draft workspace status: moegirl review loaded";
+}
+function renderMoegirlDraftReport(report) {
+  const container = document.querySelector("#moegirlDraftImportReport");
+  const card = document.createElement("article");
+  card.className = "chunk-card";
+
+  const title = document.createElement("h3");
+  title.textContent = "Moegirl Draft Review";
+  card.append(title);
+
+  const target = report.target || {};
+  const meta = document.createElement("div");
+  meta.className = "chunk-meta";
+  meta.textContent = [
+    report.kb_id,
+    report.version,
+    "chunks=" + String(report.chunk_count || 0),
+    "prompts=" + String(report.prompt_count || 0),
+    "citations=" + String(report.citation_count || 0),
+    "full_mirror_suspect_count=" + String(report.full_mirror_suspect_count || 0),
+    "missing_metadata_count=" + String(report.missing_metadata_count || 0)
+  ].filter(Boolean).join(" · ");
+  card.append(meta);
+
+  const content = document.createElement("p");
+  content.className = "chunk-content";
+  content.textContent = [
+    "accepted_pages=" + String(target.accepted_pages || 0) + "/" + String(target.accepted_pages_required || 300),
+    "faq_chunks=" + String(target.faq_chunks || 0) + "/" + String(target.faq_chunks_required || 900),
+    "golden_questions=" + String(target.golden_questions || 0) + "/" + String(target.golden_questions_required || 50),
+    "ready_for_hitl=" + String(Boolean(target.ready_for_hitl)),
+    "full_mirror_suspect_chunk_ids=" + (report.full_mirror_suspect_chunk_ids || []).join(", ")
+  ].join(" · ");
+  card.append(content);
+  container.replaceChildren(card);
 }
 function renderDraftRetrievalResults(preview) {
   draftRetrievalResults.replaceChildren(...(preview.results || []).map(renderDraftRetrievalResult));

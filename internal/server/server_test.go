@@ -970,6 +970,14 @@ func TestAdminWriteEndpointsRequireBearerToken(t *testing.T) {
 		t.Fatalf("unauthenticated draft publish status=%d body=%s", draftPublishResponse.Code, draftPublishResponse.Body.String())
 	}
 
+	moegirlImport := httptest.NewRequest("POST", "/admin/api/kb/moegirl-acgn-faq/moegirl/import-draft", bytes.NewBufferString(`{"version":"2026.06.26.moegirl","titles":["初音未来"]}`))
+	moegirlImport.Header.Set("Content-Type", "application/json")
+	moegirlImportResponse := httptest.NewRecorder()
+	handler.ServeHTTP(moegirlImportResponse, moegirlImport)
+	if moegirlImportResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated moegirl import status=%d body=%s", moegirlImportResponse.Code, moegirlImportResponse.Body.String())
+	}
+
 	draftSave := httptest.NewRequest("PUT", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.draft", bytes.NewBufferString(`{"chunks":[]}`))
 	draftSave.Header.Set("Content-Type", "application/json")
 	draftSaveResponse := httptest.NewRecorder()
@@ -2692,6 +2700,16 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 		"/publish",
 		"content_hash",
 		"gate_status",
+		"Moegirl FAQ import",
+		"导入 Moegirl FAQ draft",
+		"检查 Moegirl draft",
+		"moegirlDraftImportReport",
+		"/moegirl/import-draft",
+		"/moegirl-review",
+		"full_mirror_suspect_count",
+		"accepted_pages_required",
+		"faq_chunks_required",
+		"golden_questions_required",
 	} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("admin page missing chunk editor control %q", expected)
