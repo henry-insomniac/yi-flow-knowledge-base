@@ -71,6 +71,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAdminPage(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/source-audit"):
 		h.handleDraftSourceAudit(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/quality-gates"):
+		h.handleDraftQualityGates(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/retrieval-preview"):
 		h.handleDraftRetrievalPreview(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.Contains(r.URL.Path, "/prompts/") && strings.HasSuffix(r.URL.Path, "/preview"):
@@ -352,6 +354,9 @@ const adminPageHTML = `<!doctype html>
     </div>
     <button id="runDraftRetrievalPreview" class="secondary" type="button">运行 draft retrieval preview</button>
     <div id="draftRetrievalResults" class="chunk-list"></div>
+    <h3>Quality Gates</h3>
+    <button id="runDraftQualityGates" class="secondary" type="button">运行 quality gates</button>
+    <div id="draftQualityGateReport" class="chunk-list"></div>
     <p id="weknoraStatus" class="muted">Chunk Studio status: direction locked; draft editor is tracked in #42/#43.</p>
     <div class="grid">
       <p class="muted">最近导出版本：<strong id="lastWeKnoraExportVersion">-</strong></p>
@@ -963,6 +968,9 @@ document.querySelector("#previewDraftPrompt").onclick = async () => {
 document.querySelector("#runDraftRetrievalPreview").onclick = async () => {
   await runDraftRetrievalPreview("");
 };
+document.querySelector("#runDraftQualityGates").onclick = async () => {
+  await runDraftQualityGates();
+};
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {
     output.textContent = "请先查看知识包内容，再导入到构建器。";
@@ -1311,6 +1319,86 @@ async function runDraftRetrievalPreview(promptID) {
   const decoded = JSON.parse(text);
   renderDraftRetrievalResults(decoded);
   draftStatus.textContent = "Draft workspace status: draft retrieval · " + decoded.status + " · " + (decoded.results || []).length + " chunks";
+}
+async function runDraftQualityGates() {
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/quality-gates", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    document.querySelector("#draftQualityGateReport").replaceChildren();
+    draftStatus.textContent = "Draft workspace status: quality gates failed";
+    return;
+  }
+  const decoded = JSON.parse(text);
+  renderDraftQualityGateReport(decoded);
+  lastWeKnoraQualityGate.textContent = decoded.status || "unknown";
+  draftStatus.textContent = "Draft workspace status: quality gates · " + decoded.status + " · block_publish=" + String(decoded.block_publish);
+}
+function renderDraftQualityGateReport(report) {
+  const container = document.querySelector("#draftQualityGateReport");
+  const metrics = report.metrics || {};
+  const thresholds = report.thresholds || {};
+  const summary = document.createElement("article");
+  summary.className = "chunk-card";
+
+  const title = document.createElement("h3");
+  title.textContent = "Quality Gates · " + (report.status || "unknown");
+  summary.append(title);
+
+  const meta = document.createElement("div");
+  meta.className = "chunk-meta";
+  meta.textContent = [
+    report.kb_id,
+    report.version,
+    "block_publish=" + String(report.block_publish),
+    "latency_ms=" + String(report.latency_ms || 0)
+  ].filter(Boolean).join(" · ");
+  summary.append(meta);
+
+  const metricText = document.createElement("p");
+  metricText.className = "chunk-content";
+  metricText.textContent = [
+    "top1_hit_rate=" + qualityRate(metrics.top1_hit_rate),
+    "top5_hit_rate=" + qualityRate(metrics.top5_hit_rate) + " / min " + qualityRate(thresholds.top5_hit_rate),
+    "citation_rate=" + qualityRate(metrics.citation_rate) + " / min " + qualityRate(thresholds.citation_rate),
+    "duplicate_answer_rate=" + qualityRate(metrics.duplicate_answer_rate) + " / max " + qualityRate(thresholds.duplicate_answer_rate),
+    "refusal_pass_rate=" + qualityRate(metrics.refusal_pass_rate) + " / min " + qualityRate(thresholds.refusal_pass_rate),
+    "missing_citation_count=" + String(metrics.missing_citation_count || 0),
+    "unsupported_entity_count=" + String(metrics.unsupported_entity_count || 0)
+  ].join(" · ");
+  summary.append(metricText);
+
+  const checks = (report.checks || []).map(renderDraftQualityCheck);
+  container.replaceChildren(summary, ...checks);
+}
+function renderDraftQualityCheck(check) {
+  const card = document.createElement("article");
+  card.className = "chunk-card";
+
+  const title = document.createElement("h3");
+  title.textContent = [check.name, check.status, check.severity].filter(Boolean).join(" · ");
+  card.append(title);
+
+  const meta = document.createElement("div");
+  meta.className = "chunk-meta";
+  meta.textContent = [
+    "count=" + String(check.count || 0),
+    (check.chunk_ids || []).length ? "chunk_ids=" + (check.chunk_ids || []).join(", ") : "",
+    (check.prompt_ids || []).length ? "prompt_ids=" + (check.prompt_ids || []).join(", ") : ""
+  ].filter(Boolean).join(" · ");
+  card.append(meta);
+
+  const remediation = document.createElement("p");
+  remediation.className = "chunk-content";
+  remediation.textContent = check.remediation || "";
+  card.append(remediation);
+  return card;
+}
+function qualityRate(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "0.0%";
+  return (value * 100).toFixed(1) + "%";
 }
 function renderDraftRetrievalResults(preview) {
   draftRetrievalResults.replaceChildren(...(preview.results || []).map(renderDraftRetrievalResult));

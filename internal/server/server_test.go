@@ -2069,6 +2069,193 @@ func TestAdminDraftRetrievalPreviewLocalLatencySmoke(t *testing.T) {
 	}
 }
 
+func TestAdminDraftQualityGatesReportFailuresAndMetrics(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.gates", `{
+	  "chunks": [
+	    {
+	      "chunk_id": "good",
+	      "title": "Good chunk",
+	      "path": "draft/gates/good",
+	      "source": "yi-flow-core",
+	      "content": "Agent routing uses draft retrieval preview before publishing.",
+	      "citation_url": "https://yi-flow.com/docs/good",
+	      "citation_title": "Good",
+	      "source_name": "yi-flow docs",
+	      "license": "reviewed internal knowledge",
+	      "source_policy": "reviewed yi-flow product chunks only"
+	    },
+	    {
+	      "chunk_id": "missing-citation",
+	      "title": "Missing citation",
+	      "path": "draft/gates/missing-citation",
+	      "source": "yi-flow-core",
+	      "content": "Agent routing missing citation should block publish."
+	    },
+	    {
+	      "chunk_id": "near-dup-a",
+	      "title": "Near duplicate A",
+	      "path": "draft/gates/dup-a",
+	      "source": "yi-flow-core",
+	      "content": "Duplicate content should be detected before publishing.",
+	      "citation_url": "https://yi-flow.com/docs/dup-a",
+	      "citation_title": "Dup A",
+	      "source_name": "yi-flow docs",
+	      "license": "reviewed internal knowledge",
+	      "source_policy": "reviewed yi-flow product chunks only"
+	    },
+	    {
+	      "chunk_id": "near-dup-b",
+	      "title": "Near duplicate B",
+	      "path": "draft/gates/dup-b",
+	      "source": "yi-flow-core",
+	      "content": "Duplicate content should be detected before publishing.",
+	      "citation_url": "https://yi-flow.com/docs/dup-b",
+	      "citation_title": "Dup B",
+	      "source_name": "yi-flow docs",
+	      "license": "reviewed internal knowledge",
+	      "source_policy": "reviewed yi-flow product chunks only"
+	    },
+	    {
+	      "chunk_id": "too-short",
+	      "title": "Too short",
+	      "path": "draft/gates/too-short",
+	      "source": "yi-flow-core",
+	      "content": "short",
+	      "citation_url": "https://yi-flow.com/docs/short",
+	      "citation_title": "Short",
+	      "source_name": "yi-flow docs",
+	      "license": "reviewed internal knowledge",
+	      "source_policy": "reviewed yi-flow product chunks only"
+	    }
+	  ],
+	  "prompts": [
+	    {
+	      "id": "golden-good",
+	      "title": "Good golden",
+	      "question": "How does agent routing use draft retrieval preview?",
+	      "expected_chunk_ids": ["good"],
+	      "answerability": "answerable",
+	      "answerable": true
+	    },
+	    {
+	      "id": "golden-refusal",
+	      "title": "Refusal golden",
+	      "question": "What is the weather in Tokyo?",
+	      "expected_chunk_ids": [],
+	      "answerability": "ood",
+	      "answerable": false
+	    }
+	  ],
+	  "citations": {"citations":[]}
+	}`)
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save gates draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.gates/quality-gates", nil)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("quality gates status=%d body=%s", response.Code, response.Body.String())
+	}
+	var report struct {
+		Status       string `json:"status"`
+		BlockPublish bool   `json:"block_publish"`
+		Metrics      struct {
+			Top1HitRate            float64 `json:"top1_hit_rate"`
+			Top5HitRate            float64 `json:"top5_hit_rate"`
+			CitationRate           float64 `json:"citation_rate"`
+			DuplicateAnswerRate    float64 `json:"duplicate_answer_rate"`
+			RefusalPassRate        float64 `json:"refusal_pass_rate"`
+			MissingCitationCount   int     `json:"missing_citation_count"`
+			UnsupportedEntityCount int     `json:"unsupported_entity_count"`
+		} `json:"metrics"`
+		Checks []struct {
+			Name        string   `json:"name"`
+			Status      string   `json:"status"`
+			Severity    string   `json:"severity"`
+			Count       int      `json:"count"`
+			ChunkIDs    []string `json:"chunk_ids"`
+			PromptIDs   []string `json:"prompt_ids"`
+			Remediation string   `json:"remediation"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+		t.Fatalf("decode quality gate report: %v", err)
+	}
+	if report.Status != "failed" || !report.BlockPublish {
+		t.Fatalf("quality gate should fail and block publish: %+v body=%s", report, response.Body.String())
+	}
+	for _, expected := range []string{"missing_citations", "near_duplicate_content", "invalid_lengths", "golden_eval"} {
+		if !qualityCheckFailed(report.Checks, expected) {
+			t.Fatalf("expected failing check %s in %+v", expected, report.Checks)
+		}
+	}
+	if report.Metrics.MissingCitationCount != 1 || report.Metrics.Top5HitRate < 0.5 || report.Metrics.RefusalPassRate < 1 {
+		t.Fatalf("unexpected quality metrics = %+v", report.Metrics)
+	}
+}
+
+func TestAdminDraftQualityGatesLocalLatencySmoke(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	chunks := make([]map[string]any, 0, 1000)
+	for index := 0; index < 1000; index++ {
+		chunks = append(chunks, map[string]any{
+			"chunk_id":       "chunk-" + strconv.Itoa(index),
+			"title":          "Chunk " + strconv.Itoa(index),
+			"path":           "draft/gates/" + strconv.Itoa(index),
+			"source":         "yi-flow-core",
+			"content":        "Quality gate latency content with enough length " + strconv.Itoa(index),
+			"citation_url":   "https://yi-flow.com/docs/gates/" + strconv.Itoa(index),
+			"citation_title": "Chunk " + strconv.Itoa(index),
+			"source_name":    "yi-flow docs",
+			"license":        "reviewed internal knowledge",
+			"source_policy":  "reviewed yi-flow product chunks only",
+		})
+	}
+	body, err := json.Marshal(map[string]any{
+		"chunks":    chunks,
+		"prompts":   []any{},
+		"citations": map[string]any{"citations": []any{}},
+	})
+	if err != nil {
+		t.Fatalf("encode draft: %v", err)
+	}
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.gates-latency", string(body))
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save gates latency draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.gates-latency/quality-gates", nil)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	response := httptest.NewRecorder()
+	start := time.Now()
+	handler.ServeHTTP(response, request)
+	elapsed := time.Since(start)
+	if response.Code != http.StatusOK {
+		t.Fatalf("quality gates status=%d body=%s", response.Code, response.Body.String())
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("quality gates elapsed=%s want <=3s", elapsed)
+	}
+}
+
 func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -2124,6 +2311,17 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 		"Draft retrieval preview",
 		"Draft retrieval question",
 		"运行 draft retrieval preview",
+		"Quality Gates",
+		"运行 quality gates",
+		"draftQualityGateReport",
+		"/quality-gates",
+		"block_publish",
+		"top5_hit_rate",
+		"citation_rate",
+		"duplicate_answer_rate",
+		"refusal_pass_rate",
+		"missing_citation_count",
+		"unsupported_entity_count",
 	} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("admin page missing chunk editor control %q", expected)
@@ -2252,6 +2450,23 @@ func saveDraftJSON(t *testing.T, handler http.Handler, kbID string, version stri
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func qualityCheckFailed(checks []struct {
+	Name        string   `json:"name"`
+	Status      string   `json:"status"`
+	Severity    string   `json:"severity"`
+	Count       int      `json:"count"`
+	ChunkIDs    []string `json:"chunk_ids"`
+	PromptIDs   []string `json:"prompt_ids"`
+	Remediation string   `json:"remediation"`
+}, name string) bool {
+	for _, check := range checks {
+		if check.Name == name && check.Status == "failed" && check.Count > 0 && check.Remediation != "" {
 			return true
 		}
 	}
