@@ -2256,6 +2256,219 @@ func TestAdminDraftQualityGatesLocalLatencySmoke(t *testing.T) {
 	}
 }
 
+func TestAdminDraftDryRunBuildGeneratesPackagePreviewWithoutPublishingLatest(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	chunks := make([]map[string]any, 0, 55)
+	for index := 0; index < 55; index++ {
+		indexText := strconv.Itoa(index)
+		chunks = append(chunks, map[string]any{
+			"chunk_id":       "dry-run-chunk-" + indexText,
+			"title":          "Dry Run Chunk " + indexText,
+			"path":           "draft/dry-run/" + indexText,
+			"source":         "yi-flow-core",
+			"content":        "Draft dry run package preview chunk " + indexText + " keeps signed artifacts previewable before publish with unique wording.",
+			"citation_url":   "https://yi-flow.com/docs/dry-run/" + indexText,
+			"citation_title": "Dry Run Chunk " + indexText,
+			"source_name":    "yi-flow docs",
+			"license":        "reviewed internal knowledge",
+			"source_policy":  "reviewed yi-flow product chunks only",
+		})
+	}
+	body, err := json.Marshal(map[string]any{
+		"chunks": chunks,
+		"prompts": []map[string]any{
+			{
+				"id":                 "dry-run-answerable",
+				"title":              "Dry-run answerable",
+				"question":           "What keeps signed artifacts previewable before publish?",
+				"expected_chunk_ids": []string{"dry-run-chunk-0"},
+				"answerability":      "answerable",
+				"answerable":         true,
+			},
+			{
+				"id":            "dry-run-refusal",
+				"title":         "Dry-run refusal",
+				"question":      "What is the weather in Tokyo?",
+				"answerability": "ood",
+				"answerable":    false,
+			},
+		},
+		"citations": map[string]any{"citations": []any{}},
+	})
+	if err != nil {
+		t.Fatalf("encode draft: %v", err)
+	}
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.dry-run", string(body))
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save dry-run draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.dry-run/build-dry-run?limit=50", nil)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("draft dry-run status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var dryRun struct {
+		KBID          string `json:"kb_id"`
+		Version       string `json:"version"`
+		Latest        bool   `json:"latest"`
+		ChunkCount    int    `json:"chunk_count"`
+		CitationCount int    `json:"citation_count"`
+		PromptCount   int    `json:"prompt_count"`
+		PackageHash   string `json:"package_hash"`
+		PreviewURL    string `json:"preview_url"`
+		QualityStatus string `json:"quality_status"`
+		Manifest      struct {
+			KBID        string `json:"kb_id"`
+			Version     string `json:"version"`
+			ContentHash string `json:"content_hash"`
+			Files       struct {
+				Chunks []struct {
+					Path string `json:"path"`
+				} `json:"chunks"`
+				Vector []struct {
+					Path string `json:"path"`
+				} `json:"vector"`
+				Citations []struct {
+					Path string `json:"path"`
+				} `json:"citations"`
+				Prompts []struct {
+					Path string `json:"path"`
+				} `json:"prompts"`
+			} `json:"files"`
+		} `json:"manifest"`
+		Files []struct {
+			Path string `json:"path"`
+			Size uint64 `json:"size"`
+		} `json:"files"`
+		Preview struct {
+			Chunks []struct {
+				ChunkID            string   `json:"chunk_id"`
+				SuggestedQuestions []string `json:"suggested_questions"`
+			} `json:"chunks"`
+		} `json:"preview"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &dryRun); err != nil {
+		t.Fatalf("decode dry-run: %v", err)
+	}
+	if dryRun.KBID != "yi-flow-core" || dryRun.Version != "2026.06.26.dry-run" || dryRun.Latest || dryRun.ChunkCount != 55 || dryRun.CitationCount != 55 || dryRun.PromptCount != 2 {
+		t.Fatalf("unexpected dry-run summary = %+v", dryRun)
+	}
+	if dryRun.QualityStatus != "passed" || !strings.HasPrefix(dryRun.PackageHash, "sha256:") || dryRun.PackageHash != dryRun.Manifest.ContentHash {
+		t.Fatalf("unexpected package metadata = %+v", dryRun)
+	}
+	for _, expectedFile := range []string{"manifest.json", "knowledge-pack.zip", "chunks.sqlite", "citations.json", "prompts.json", "vector.index"} {
+		if !fileListContains(dryRun.Files, expectedFile) {
+			t.Fatalf("dry-run file list missing %s: %+v", expectedFile, dryRun.Files)
+		}
+	}
+	if dryRun.Manifest.KBID != "yi-flow-core" || dryRun.Manifest.Version != "2026.06.26.dry-run" || dryRun.Manifest.Files.Chunks[0].Path != "chunks.sqlite" || dryRun.Manifest.Files.Vector[0].Path != "vector.index" || dryRun.Manifest.Files.Citations[0].Path != "citations.json" || dryRun.Manifest.Files.Prompts[0].Path != "prompts.json" {
+		t.Fatalf("unexpected manifest preview = %+v", dryRun.Manifest)
+	}
+	if !strings.Contains(dryRun.PreviewURL, "/admin/api/kb/yi-flow-core/drafts/2026.06.26.dry-run/build-dry-run?limit=50") {
+		t.Fatalf("preview url = %s", dryRun.PreviewURL)
+	}
+	if len(dryRun.Preview.Chunks) != 50 || dryRun.Preview.Chunks[0].ChunkID != "dry-run-chunk-0" || len(dryRun.Preview.Chunks[0].SuggestedQuestions) == 0 {
+		t.Fatalf("unexpected package preview = %+v", dryRun.Preview)
+	}
+
+	latestResponse := httptest.NewRecorder()
+	handler.ServeHTTP(latestResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/latest/manifest.json", nil))
+	if latestResponse.Code != http.StatusNotFound {
+		t.Fatalf("dry-run build should not publish latest, latest status=%d body=%s", latestResponse.Code, latestResponse.Body.String())
+	}
+	versionsResponse := httptest.NewRecorder()
+	handler.ServeHTTP(versionsResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/versions", nil))
+	if versionsResponse.Code != http.StatusNotFound {
+		t.Fatalf("dry-run build should not create published versions, versions status=%d body=%s", versionsResponse.Code, versionsResponse.Body.String())
+	}
+}
+
+func TestAdminDraftDryRunBuildRequiresPassingQualityGates(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.dry-run-fail", `{
+	  "chunks": [
+	    {
+	      "chunk_id": "dry-run-fail",
+	      "title": "Dry run fail",
+	      "path": "draft/dry-run/fail",
+	      "source": "yi-flow-core",
+	      "content": "This draft intentionally lacks citation metadata so dry-run build is blocked."
+	    }
+	  ],
+	  "prompts": [
+	    {
+	      "id": "dry-run-fail-prompt",
+	      "title": "Dry-run fail prompt",
+	      "question": "Why should dry-run fail?",
+	      "expected_chunk_ids": ["dry-run-fail"],
+	      "answerability": "answerable",
+	      "answerable": true
+	    }
+	  ],
+	  "citations": {"citations":[]}
+	}`)
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save dry-run failing draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.dry-run-fail/build-dry-run", nil)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("failing quality gates should block dry-run status=%d body=%s", response.Code, response.Body.String())
+	}
+	var failure struct {
+		Error         string `json:"error"`
+		QualityStatus string `json:"quality_status"`
+		QualityReport struct {
+			Status       string `json:"status"`
+			BlockPublish bool   `json:"block_publish"`
+			Checks       []struct {
+				Name        string `json:"name"`
+				Status      string `json:"status"`
+				Remediation string `json:"remediation"`
+			} `json:"checks"`
+		} `json:"quality_report"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil {
+		t.Fatalf("decode dry-run failure: %v", err)
+	}
+	if !strings.Contains(failure.Error, "quality gates failed") || failure.QualityStatus != "failed" || !failure.QualityReport.BlockPublish || !qualityGateFailureContains(failure.QualityReport.Checks, "missing_citations") {
+		t.Fatalf("unexpected dry-run failure = %+v body=%s", failure, response.Body.String())
+	}
+}
+
 func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -2322,6 +2535,15 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 		"refusal_pass_rate",
 		"missing_citation_count",
 		"unsupported_entity_count",
+		"Dry-run Build",
+		"运行 draft dry-run build",
+		"draftDryRunBuildReport",
+		"/build-dry-run",
+		"package_hash",
+		"manifest",
+		"Generated files",
+		"Manifest preview",
+		"preview_url",
 	} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("admin page missing chunk editor control %q", expected)
@@ -2467,6 +2689,31 @@ func qualityCheckFailed(checks []struct {
 }, name string) bool {
 	for _, check := range checks {
 		if check.Name == name && check.Status == "failed" && check.Count > 0 && check.Remediation != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func fileListContains(files []struct {
+	Path string `json:"path"`
+	Size uint64 `json:"size"`
+}, target string) bool {
+	for _, file := range files {
+		if file.Path == target && file.Size > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func qualityGateFailureContains(checks []struct {
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Remediation string `json:"remediation"`
+}, name string) bool {
+	for _, check := range checks {
+		if check.Name == name && check.Status == "failed" && check.Remediation != "" {
 			return true
 		}
 	}

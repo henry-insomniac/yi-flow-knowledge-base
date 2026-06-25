@@ -73,6 +73,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleDraftSourceAudit(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/quality-gates"):
 		h.handleDraftQualityGates(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/build-dry-run"):
+		h.handleDraftBuildDryRun(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/retrieval-preview"):
 		h.handleDraftRetrievalPreview(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.Contains(r.URL.Path, "/prompts/") && strings.HasSuffix(r.URL.Path, "/preview"):
@@ -357,6 +359,9 @@ const adminPageHTML = `<!doctype html>
     <h3>Quality Gates</h3>
     <button id="runDraftQualityGates" class="secondary" type="button">运行 quality gates</button>
     <div id="draftQualityGateReport" class="chunk-list"></div>
+    <h3>Dry-run Build</h3>
+    <button id="runDraftBuildDryRun" class="secondary" type="button">运行 draft dry-run build</button>
+    <div id="draftDryRunBuildReport" class="chunk-list"></div>
     <p id="weknoraStatus" class="muted">Chunk Studio status: direction locked; draft editor is tracked in #42/#43.</p>
     <div class="grid">
       <p class="muted">最近导出版本：<strong id="lastWeKnoraExportVersion">-</strong></p>
@@ -971,6 +976,9 @@ document.querySelector("#runDraftRetrievalPreview").onclick = async () => {
 document.querySelector("#runDraftQualityGates").onclick = async () => {
   await runDraftQualityGates();
 };
+document.querySelector("#runDraftBuildDryRun").onclick = async () => {
+  await runDraftBuildDryRun();
+};
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {
     output.textContent = "请先查看知识包内容，再导入到构建器。";
@@ -1399,6 +1407,86 @@ function renderDraftQualityCheck(check) {
 function qualityRate(value) {
   if (typeof value !== "number" || Number.isNaN(value)) return "0.0%";
   return (value * 100).toFixed(1) + "%";
+}
+async function runDraftBuildDryRun() {
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/build-dry-run?limit=50", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  const container = document.querySelector("#draftDryRunBuildReport");
+  if (!response.ok) {
+    container.replaceChildren();
+    draftStatus.textContent = "Draft workspace status: dry-run build failed";
+    try {
+      const decoded = JSON.parse(text);
+      if (decoded.quality_report) renderDraftQualityGateReport(decoded.quality_report);
+    } catch (_) {}
+    return;
+  }
+  const decoded = JSON.parse(text);
+  renderDraftDryRunBuildReport(decoded);
+  if (decoded.preview) renderPreview(decoded.preview);
+  lastWeKnoraExportVersion.textContent = decoded.version || "-";
+  lastWeKnoraQualityGate.textContent = decoded.quality_status || "unknown";
+  draftStatus.textContent = "Draft workspace status: dry-run build · " + decoded.quality_status + " · " + decoded.chunk_count + " chunks";
+}
+function renderDraftDryRunBuildReport(result) {
+  const container = document.querySelector("#draftDryRunBuildReport");
+  const summary = document.createElement("article");
+  summary.className = "chunk-card";
+
+  const title = document.createElement("h3");
+  title.textContent = "Dry-run Build · " + (result.version || "draft");
+  summary.append(title);
+
+  const meta = document.createElement("div");
+  meta.className = "chunk-meta";
+  meta.textContent = [
+    result.kb_id,
+    "latest=" + String(result.latest),
+    "quality_status=" + (result.quality_status || "unknown"),
+    "package_hash=" + (result.package_hash || "")
+  ].filter(Boolean).join(" · ");
+  summary.append(meta);
+
+  const counts = document.createElement("p");
+  counts.className = "chunk-content";
+  counts.textContent = [
+    "chunk_count=" + String(result.chunk_count || 0),
+    "citation_count=" + String(result.citation_count || 0),
+    "prompt_count=" + String(result.prompt_count || 0),
+    "preview_url=" + (result.preview_url || "")
+  ].join(" · ");
+  summary.append(counts);
+
+  const files = document.createElement("article");
+  files.className = "chunk-card";
+  const filesTitle = document.createElement("h3");
+  filesTitle.textContent = "Generated files";
+  files.append(filesTitle);
+  const fileText = document.createElement("p");
+  fileText.className = "chunk-content";
+  fileText.textContent = (result.files || []).map((file) => file.path + " (" + String(file.size || 0) + " bytes)").join(" · ");
+  files.append(fileText);
+
+  const manifest = document.createElement("article");
+  manifest.className = "chunk-card";
+  const manifestTitle = document.createElement("h3");
+  manifestTitle.textContent = "Manifest preview";
+  manifest.append(manifestTitle);
+  const manifestMeta = document.createElement("div");
+  manifestMeta.className = "chunk-meta";
+  const manifestData = result.manifest || {};
+  manifestMeta.textContent = [
+    manifestData.schema_version,
+    manifestData.kb_id,
+    manifestData.version,
+    manifestData.content_hash
+  ].filter(Boolean).join(" · ");
+  manifest.append(manifestMeta);
+
+  container.replaceChildren(summary, files, manifest);
 }
 function renderDraftRetrievalResults(preview) {
   draftRetrievalResults.replaceChildren(...(preview.results || []).map(renderDraftRetrievalResult));
