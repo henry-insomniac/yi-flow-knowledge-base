@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,19 +37,26 @@ type weknoraExportChunk struct {
 	KnowledgeFilename string                 `json:"knowledge_filename"`
 	KnowledgeSource   string                 `json:"knowledge_source"`
 	URL               string                 `json:"url"`
+	PageID            int                    `json:"page_id"`
+	RevisionID        string                 `json:"revision_id"`
+	Touched           string                 `json:"touched"`
+	Categories        []string               `json:"categories"`
+	FetchedAt         string                 `json:"fetched_at"`
 	Score             float64                `json:"score"`
 	Metadata          map[string]interface{} `json:"metadata"`
 	Reviewed          bool                   `json:"reviewed"`
+	ReviewStatus      string                 `json:"review_status"`
 	License           string                 `json:"license"`
 	SourcePolicy      string                 `json:"source_policy"`
 }
 
 type weknoraExportCitationFile struct {
-	Source       string                  `json:"source"`
-	License      string                  `json:"license"`
-	SourcePolicy string                  `json:"source_policy"`
-	GeneratedAt  string                  `json:"generated_at"`
-	Citations    []weknoraExportCitation `json:"citations"`
+	Source        string                      `json:"source"`
+	License       string                      `json:"license"`
+	SourcePolicy  string                      `json:"source_policy"`
+	GeneratedAt   string                      `json:"generated_at"`
+	CrawlManifest []moegirlCrawlManifestEntry `json:"crawl_manifest,omitempty"`
+	Citations     []weknoraExportCitation     `json:"citations"`
 }
 
 type weknoraExportCitation struct {
@@ -157,8 +166,11 @@ func (h *Handler) prepareWeKnoraExport(r *http.Request, suffix string) (prepared
 	if err != nil {
 		return preparedWeKnoraExport{}, http.StatusBadRequest, fmt.Errorf("invalid version")
 	}
+	if err := validateWeKnoraExportPolicy(kbID, payload); err != nil {
+		return preparedWeKnoraExport{}, http.StatusBadRequest, err
+	}
 
-	buildPayload, citationCount, err := weknoraExportBuildPayload(payload)
+	buildPayload, citationCount, err := weknoraExportBuildPayload(kbID, payload)
 	if err != nil {
 		return preparedWeKnoraExport{}, http.StatusBadRequest, err
 	}
@@ -185,6 +197,62 @@ func (h *Handler) prepareWeKnoraExport(r *http.Request, suffix string) (prepared
 		Manifest:      manifest,
 		CitationCount: citationCount,
 	}, http.StatusOK, nil
+}
+
+func validateWeKnoraExportPolicy(kbID string, payload weknoraExportPublishRequest) error {
+	defaultLicense := resolvedWeKnoraExportLicense(payload)
+	defaultSourcePolicy := resolvedWeKnoraExportSourcePolicy(payload)
+	defaultSource := resolvedWeKnoraExportSource(payload)
+	for index, chunk := range payload.Chunks {
+		if !weknoraChunkReviewed(chunk) {
+			return fmt.Errorf("chunks[%d].reviewed must be true before export", index)
+		}
+		for _, required := range []struct {
+			name  string
+			value string
+		}{
+			{name: "id", value: chunk.ID},
+			{name: "content", value: chunk.Content},
+			{name: "knowledge_title", value: chunk.KnowledgeTitle},
+			{name: "knowledge_filename", value: chunk.KnowledgeFilename},
+			{name: "knowledge_source", value: chunk.KnowledgeSource},
+		} {
+			if strings.TrimSpace(required.value) == "" {
+				return fmt.Errorf("chunks[%d].%s is required for WeKnora export", index, required.name)
+			}
+		}
+		sourceURL := firstNonEmpty(chunk.URL, stringMetadata(chunk.Metadata, "url"), stringMetadata(chunk.Metadata, "source_url"))
+		if sourceURL == "" {
+			return fmt.Errorf("chunks[%d].source_url is required for WeKnora export", index)
+		}
+		if firstNonEmpty(chunk.License, defaultLicense) == "" {
+			return fmt.Errorf("chunks[%d].license is required for WeKnora export", index)
+		}
+		if firstNonEmpty(chunk.SourcePolicy, defaultSourcePolicy) == "" {
+			return fmt.Errorf("chunks[%d].source_policy is required for WeKnora export", index)
+		}
+	}
+
+	if isMoegirlKB(kbID) {
+		for index, chunk := range payload.Chunks {
+			sourceURL := firstNonEmpty(chunk.URL, stringMetadata(chunk.Metadata, "url"), stringMetadata(chunk.Metadata, "source_url"))
+			if !isMoegirlSourceURL(sourceURL) {
+				return fmt.Errorf("chunks[%d].source_url must use zh.moegirl.org.cn for moegirl WeKnora export", index)
+			}
+			license := firstNonEmpty(chunk.License, defaultLicense)
+			if !strings.Contains(license, "CC BY-NC-SA 3.0 CN") {
+				return fmt.Errorf("chunks[%d].license must be CC BY-NC-SA 3.0 CN for moegirl WeKnora export", index)
+			}
+			sourcePolicy := strings.ToLower(firstNonEmpty(chunk.SourcePolicy, defaultSourcePolicy))
+			if !strings.Contains(sourcePolicy, "summary") || !strings.Contains(sourcePolicy, "no full") || !strings.Contains(sourcePolicy, "no ai training") {
+				return fmt.Errorf("chunks[%d].source_policy must be summary-only with no full article mirror and no AI training for moegirl WeKnora export", index)
+			}
+			if _, err := weknoraMoegirlCrawlManifestEntry(kbID, index, chunk, firstNonEmpty(chunk.KnowledgeSource, defaultSource), license, firstNonEmpty(chunk.SourcePolicy, defaultSourcePolicy)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func weknoraQualityReportFor(prepared preparedWeKnoraExport) weknoraQualityReport {
@@ -221,7 +289,7 @@ func weknoraChunkSources(chunks []knowledgePackBuildChunk) map[string]int {
 	return result
 }
 
-func weknoraExportBuildPayload(payload weknoraExportPublishRequest) (buildPublishRequest, int, error) {
+func weknoraExportBuildPayload(kbID string, payload weknoraExportPublishRequest) (buildPublishRequest, int, error) {
 	if len(payload.Chunks) == 0 {
 		return buildPublishRequest{}, 0, fmt.Errorf("chunks must not be empty")
 	}
@@ -231,15 +299,23 @@ func weknoraExportBuildPayload(payload weknoraExportPublishRequest) (buildPublis
 	sourcePolicy := resolvedWeKnoraExportSourcePolicy(payload)
 	buildChunks := make([]knowledgePackBuildChunk, 0, len(payload.Chunks))
 	citations := make([]weknoraExportCitation, 0, len(payload.Chunks))
+	crawlManifest := make([]moegirlCrawlManifestEntry, 0, len(payload.Chunks))
 	seen := map[string]bool{}
 
 	for index, chunk := range payload.Chunks {
-		if !chunk.Reviewed {
+		if !weknoraChunkReviewed(chunk) {
 			return buildPublishRequest{}, 0, fmt.Errorf("chunks[%d].reviewed must be true before export", index)
 		}
 		buildChunk, citation, err := weknoraExportBuildChunk(index, chunk, source, license, sourcePolicy)
 		if err != nil {
 			return buildPublishRequest{}, 0, err
+		}
+		if isMoegirlKB(kbID) {
+			entry, err := weknoraMoegirlCrawlManifestEntry(kbID, index, chunk, citation.Source, citation.License, citation.SourcePolicy)
+			if err != nil {
+				return buildPublishRequest{}, 0, err
+			}
+			crawlManifest = append(crawlManifest, entry)
 		}
 		if seen[buildChunk.ChunkID] {
 			return buildPublishRequest{}, 0, fmt.Errorf("chunks[%d].id duplicates exported chunk_id %s", index, buildChunk.ChunkID)
@@ -250,11 +326,12 @@ func weknoraExportBuildPayload(payload weknoraExportPublishRequest) (buildPublis
 	}
 
 	citationFile := weknoraExportCitationFile{
-		Source:       source,
-		License:      license,
-		SourcePolicy: sourcePolicy,
-		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
-		Citations:    citations,
+		Source:        source,
+		License:       license,
+		SourcePolicy:  sourcePolicy,
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		CrawlManifest: crawlManifest,
+		Citations:     citations,
 	}
 	citationsData, err := json.Marshal(citationFile)
 	if err != nil {
@@ -324,6 +401,60 @@ func weknoraExportBuildChunk(
 	return buildChunk, citation, nil
 }
 
+func weknoraChunkReviewed(chunk weknoraExportChunk) bool {
+	status := strings.ToLower(strings.TrimSpace(chunk.ReviewStatus))
+	return chunk.Reviewed || status == "reviewed"
+}
+
+func weknoraMoegirlCrawlManifestEntry(
+	kbID string,
+	index int,
+	chunk weknoraExportChunk,
+	source string,
+	license string,
+	sourcePolicy string,
+) (moegirlCrawlManifestEntry, error) {
+	sourceURL := firstNonEmpty(chunk.URL, stringMetadata(chunk.Metadata, "url"), stringMetadata(chunk.Metadata, "source_url"))
+	pageID := firstNonZero(chunk.PageID, intMetadata(chunk.Metadata, "page_id"))
+	revisionID := firstNonEmpty(chunk.RevisionID, stringMetadata(chunk.Metadata, "revision_id"))
+	touched := firstNonEmpty(chunk.Touched, stringMetadata(chunk.Metadata, "touched"))
+	categories := firstNonEmptyStringSlice(chunk.Categories, stringSliceMetadata(chunk.Metadata, "categories"))
+	fetchedAt := firstNonEmpty(chunk.FetchedAt, stringMetadata(chunk.Metadata, "fetched_at"))
+
+	if sourceURL == "" {
+		return moegirlCrawlManifestEntry{}, fmt.Errorf("chunks[%d].source_url is required for moegirl WeKnora export", index)
+	}
+	if pageID == 0 {
+		return moegirlCrawlManifestEntry{}, fmt.Errorf("chunks[%d].page_id is required for moegirl WeKnora export", index)
+	}
+	if revisionID == "" {
+		return moegirlCrawlManifestEntry{}, fmt.Errorf("chunks[%d].revision_id is required for moegirl WeKnora export", index)
+	}
+	if touched == "" {
+		return moegirlCrawlManifestEntry{}, fmt.Errorf("chunks[%d].touched is required for moegirl WeKnora export", index)
+	}
+	if len(categories) == 0 {
+		return moegirlCrawlManifestEntry{}, fmt.Errorf("chunks[%d].categories are required for moegirl WeKnora export", index)
+	}
+	if fetchedAt == "" {
+		return moegirlCrawlManifestEntry{}, fmt.Errorf("chunks[%d].fetched_at is required for moegirl WeKnora export", index)
+	}
+
+	return moegirlCrawlManifestEntry{
+		KBID:         kbID,
+		SourceName:   source,
+		SourceURL:    urlOrigin(sourceURL),
+		CanonicalURL: sourceURL,
+		PageID:       pageID,
+		RevisionID:   revisionID,
+		Touched:      touched,
+		License:      license,
+		SourcePolicy: sourcePolicy,
+		Categories:   categories,
+		FetchedAt:    fetchedAt,
+	}, nil
+}
+
 func weknoraExportChunkID(id string) string {
 	id = strings.TrimSpace(id)
 	if strings.HasPrefix(id, "weknora:") {
@@ -342,4 +473,97 @@ func resolvedWeKnoraExportLicense(payload weknoraExportPublishRequest) string {
 
 func resolvedWeKnoraExportSourcePolicy(payload weknoraExportPublishRequest) string {
 	return firstNonEmpty(payload.SourcePolicy, defaultWeKnoraExportSourcePolicy)
+}
+
+func isMoegirlSourceURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Hostname(), "zh.moegirl.org.cn")
+}
+
+func urlOrigin(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+func firstNonZero(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func intMetadata(metadata map[string]interface{}, key string) int {
+	value, ok := metadata[key]
+	if !ok {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		parsed, _ := typed.Int64()
+		return int(parsed)
+	case string:
+		parsed, _ := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func firstNonEmptyStringSlice(values ...[]string) []string {
+	for _, value := range values {
+		if len(value) > 0 {
+			return value
+		}
+	}
+	return nil
+}
+
+func stringSliceMetadata(metadata map[string]interface{}, key string) []string {
+	value, ok := metadata[key]
+	if !ok {
+		return nil
+	}
+	switch typed := value.(type) {
+	case []string:
+		return nonEmptyStrings(typed)
+	case []any:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+				result = append(result, text)
+			}
+		}
+		return result
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return nil
+		}
+		return []string{strings.TrimSpace(typed)}
+	default:
+		return nil
+	}
+}
+
+func nonEmptyStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if text := strings.TrimSpace(value); text != "" {
+			result = append(result, text)
+		}
+	}
+	return result
 }

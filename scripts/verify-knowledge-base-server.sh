@@ -7,6 +7,8 @@ cd "$ROOT_DIR"
 go test ./...
 go build -o /tmp/yi-flow-knowledge-base-verify ./cmd/server
 scripts/verify-weknora-lightweight-replacement.sh
+scripts/verify-weknora-dataset-contract.sh
+scripts/verify-weknora-pilot-migration.sh
 scripts/verify-yi-flow-core-coverage.sh
 scripts/verify-moegirl-golden-eval.sh
 scripts/prepare-moegirl-hitl-review.sh

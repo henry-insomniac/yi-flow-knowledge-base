@@ -693,6 +693,198 @@ func TestAdminWeKnoraExportRejectsUnreviewedChunks(t *testing.T) {
 	}
 }
 
+func TestAdminWeKnoraMoegirlExportRequiresSourceURL(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/moegirl-acgn-faq/weknora/export-publish", bytes.NewBufferString(`{
+	  "version": "2026.06.25.missing-source-url",
+	  "source": "Moegirl reviewed export",
+	  "license": "CC BY-NC-SA 3.0 CN",
+	  "source_policy": "reviewed summary chunks only; no full article mirror; no AI training",
+	  "chunks": [{
+	    "id": "moegirl-miku-overview",
+	    "content": "初音未来是虚拟歌手形象。本导出只保留审核后的摘要。",
+	    "knowledge_id": "moegirl-doc-miku",
+	    "knowledge_title": "初音未来",
+	    "knowledge_filename": "moegirl/faq/初音未来/overview",
+	    "knowledge_source": "Moegirl reviewed export",
+	    "reviewed": true
+	  }]
+	}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("missing source url status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "source_url") {
+		t.Fatalf("missing source url error should mention source_url: %s", response.Body.String())
+	}
+}
+
+func TestAdminCanExportMoegirlWeKnoraChunksWithCrawlManifest(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/moegirl-acgn-faq/weknora/export-publish", bytes.NewBufferString(`{
+	  "version": "2026.06.25.moegirl-weknora",
+	  "source": "Moegirl reviewed export",
+	  "license": "CC BY-NC-SA 3.0 CN",
+	  "source_policy": "reviewed summary chunks only; no full article mirror; no AI training",
+	  "chunks": [{
+	    "id": "moegirl-miku-overview",
+	    "content": "初音未来是虚拟歌手形象。本导出只保留审核后的摘要。",
+	    "knowledge_id": "moegirl-doc-miku",
+	    "knowledge_title": "初音未来",
+	    "knowledge_filename": "moegirl/faq/初音未来/overview",
+	    "knowledge_source": "Moegirl reviewed export",
+	    "metadata": {
+	      "url": "https://zh.moegirl.org.cn/初音未来",
+	      "page_id": 1399,
+	      "revision_id": "8291001",
+	      "touched": "2026-06-24T08:00:00Z",
+	      "categories": ["VOCALOID", "虚拟歌手"],
+	      "fetched_at": "2026-06-25T04:00:00Z"
+	    },
+	    "review_status": "reviewed",
+	    "reviewed": true
+	  }],
+	  "prompts": [
+	    {"id": "miku-overview-check", "title": "验证初音未来", "question": "初音未来是谁？"}
+	  ]
+	}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("moegirl weknora export status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, httptest.NewRequest("GET", "/kb/moegirl-acgn-faq/latest/preview?limit=3", nil))
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+	previewBody := previewResponse.Body.String()
+	for _, expected := range []string{"初音未来", "https://zh.moegirl.org.cn/初音未来", "CC BY-NC-SA 3.0 CN"} {
+		if !strings.Contains(previewBody, expected) {
+			t.Fatalf("preview missing %q: %s", expected, previewBody)
+		}
+	}
+}
+
+func TestAdminWeKnoraExportRejectsCrossContaminatedKnowledgeBases(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	cases := []struct {
+		name         string
+		path         string
+		body         string
+		errorSnippet string
+	}{
+		{
+			name: "core rejects moegirl source",
+			path: "/admin/api/kb/yi-flow-core/weknora/export-publish",
+			body: `{
+			  "version": "2026.06.25.cross-core",
+			  "source": "Moegirl reviewed export",
+			  "license": "CC BY-NC-SA 3.0 CN",
+			  "source_policy": "reviewed summary chunks only; no full article mirror; no AI training",
+			  "chunks": [{
+			    "id": "moegirl-miku-overview",
+			    "content": "初音未来摘要不允许进入 yi-flow-core。",
+			    "knowledge_title": "初音未来",
+			    "knowledge_filename": "moegirl/faq/初音未来/overview",
+			    "knowledge_source": "Moegirl reviewed export",
+			    "metadata": {"url": "https://zh.moegirl.org.cn/初音未来"},
+			    "review_status": "reviewed"
+			  }]
+			}`,
+			errorSnippet: "moegirl",
+		},
+		{
+			name: "moegirl rejects yi-flow source",
+			path: "/admin/api/kb/moegirl-acgn-faq/weknora/export-publish",
+			body: `{
+			  "version": "2026.06.25.cross-moegirl",
+			  "source": "yi-flow-core reviewed export",
+			  "license": "reviewed internal knowledge",
+			  "source_policy": "reviewed yi-flow product chunks only",
+			  "chunks": [{
+			    "id": "yi-flow-core-agent-answer-flow-001",
+			    "content": "Agent 回答链路不允许进入 Moegirl FAQ。",
+			    "knowledge_title": "Agent 回答链路",
+			    "knowledge_filename": "docs/architecture/agent-answer-flow.zh.mmd",
+			    "knowledge_source": "yi-flow-knowledge-app",
+			    "metadata": {
+			      "url": "https://github.com/henry-insomniac/yi-flow-knowledge-app/blob/main/docs/architecture/agent-answer-flow.zh.mmd",
+			      "page_id": 1399,
+			      "revision_id": "8291001",
+			      "touched": "2026-06-24T08:00:00Z",
+			      "categories": ["internal"],
+			      "fetched_at": "2026-06-25T04:00:00Z"
+			    },
+			    "review_status": "reviewed"
+			  }]
+			}`,
+			errorSnippet: "zh.moegirl.org.cn",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			request := httptest.NewRequest("POST", tc.path, bytes.NewBufferString(tc.body))
+			request.Header.Set("Authorization", "Bearer test-admin-token")
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("cross-contaminated export status=%d body=%s", response.Code, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), tc.errorSnippet) {
+				t.Fatalf("cross-contaminated export should mention %q: %s", tc.errorSnippet, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestAdminCanRollbackLatestToExistingVersion(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),

@@ -1,0 +1,68 @@
+{
+  "kb_id": "yi-flow-core",
+  "weknora_kb_id": "yi-flow-core-reviewed",
+  "weknora_kb_name": "Yi Flow Core",
+  "version": "2026.06.25.weknora-seed",
+  "source": "yi-flow-core reviewed export",
+  "license": "reviewed internal knowledge",
+  "source_policy": "reviewed yi-flow product chunks only; preserve source URL and license",
+  "llm_recommended": ["Qwen3-4B-Q4_K_M"],
+  "chunks": [
+    {
+      "id": "yi-flow-core-knowledge-update-path-001",
+      "content": "yi-flow 知识包更新路径从远程 latest manifest 开始。App 拉取 latest manifest，校验 schema、content_hash、signature、files 和 security 后，与本地 active_version 对比；发现新版本时下载 knowledge-pack.zip，校验 sha256 和签名，再解压到版本目录，最后原子写入 active_version。",
+      "knowledge_id": "yi-flow-core-doc-knowledge-update",
+      "knowledge_title": "yi-flow 知识包更新路径",
+      "knowledge_filename": "docs/architecture/knowledge-pack-update-flow.zh.mmd",
+      "knowledge_source": "yi-flow-knowledge-app",
+      "metadata": {
+        "source_url": "https://github.com/henry-insomniac/yi-flow-knowledge-app/blob/main/docs/architecture/knowledge-pack-update-flow.zh.mmd"
+      },
+      "review_status": "reviewed",
+      "reviewed": true
+    },
+    {
+      "id": "yi-flow-core-builder-publish-001",
+      "content": "知识包发布由服务端 build-publish 或 WeKnora reviewed export 接口完成。人工维护 reviewed chunks、prompts、citations；服务端生成 chunks.sqlite、vector.index、prompts.json、citations.json、knowledge-pack.zip、manifest.json、content_hash 和 ed25519 signature，并把该版本设为 latest。",
+      "knowledge_id": "yi-flow-core-doc-builder-publish",
+      "knowledge_title": "知识包 builder publish 流程",
+      "knowledge_filename": "README.md#admin-api",
+      "knowledge_source": "yi-flow-knowledge-base",
+      "metadata": {
+        "source_url": "https://github.com/henry-insomniac/yi-flow-knowledge-base/blob/main/README.md"
+      },
+      "review_status": "reviewed",
+      "reviewed": true
+    },
+    {
+      "id": "yi-flow-core-agent-answer-flow-001",
+      "content": "Agent 回答链路是 Query -> intent router -> tool plan -> knowledge.search -> evidence policy -> citation constrained prompt -> selected model provider -> answer normalize -> citation attach。检索证据不足时返回受控的本地知识不足说明，不把模型推测写成本地知识。",
+      "knowledge_id": "yi-flow-core-doc-agent-answer-flow",
+      "knowledge_title": "Agent 回答链路",
+      "knowledge_filename": "docs/architecture/agent-answer-flow.zh.mmd",
+      "knowledge_source": "yi-flow-knowledge-app",
+      "metadata": {
+        "source_url": "https://github.com/henry-insomniac/yi-flow-knowledge-app/blob/main/docs/architecture/agent-answer-flow.zh.mmd"
+      },
+      "review_status": "reviewed",
+      "reviewed": true
+    }
+  ],
+  "prompts": [
+    {
+      "id": "yi-flow-core-knowledge-update-path-check",
+      "title": "验证知识包更新路径",
+      "question": "yi-flow 知识包如何从远程 latest 更新到本地 active_version？"
+    },
+    {
+      "id": "yi-flow-core-builder-publish-check",
+      "title": "验证知识包发布流程",
+      "question": "知识包发布时服务端会生成哪些文件和签名信息？"
+    },
+    {
+      "id": "yi-flow-core-agent-answer-flow-check",
+      "title": "验证 Agent 回答链路",
+      "question": "Agent 回答链路如何避免把模型推测写成本地知识？"
+    }
+  ]
+}

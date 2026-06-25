@@ -1,0 +1,83 @@
+{
+  "kb_id": "moegirl-acgn-faq",
+  "weknora_kb_id": "moegirl-acgn-faq-reviewed",
+  "weknora_kb_name": "Moegirl ACGN FAQ",
+  "version": "2026.06.25.weknora-moegirl-sample",
+  "source": "Moegirl reviewed export",
+  "license": "CC BY-NC-SA 3.0 CN",
+  "source_policy": "reviewed summary chunks only; no full article mirror; no AI training",
+  "llm_recommended": ["Qwen3-4B-Q4_K_M"],
+  "chunks": [
+    {
+      "id": "moegirl-miku-overview",
+      "content": "初音未来是以 VOCALOID 语音合成软件和虚拟歌手形象为核心的角色。本知识包只保留审核后的高层摘要，用于回答“是谁/是什么”类问题。",
+      "knowledge_id": "moegirl-doc-miku",
+      "knowledge_title": "初音未来",
+      "knowledge_filename": "moegirl/faq/初音未来/overview",
+      "knowledge_source": "Moegirl reviewed export",
+      "metadata": {
+        "url": "https://zh.moegirl.org.cn/初音未来",
+        "page_id": 1399,
+        "revision_id": "8291001",
+        "touched": "2026-06-24T08:00:00Z",
+        "categories": ["VOCALOID", "虚拟歌手"],
+        "fetched_at": "2026-06-25T04:00:00Z"
+      },
+      "review_status": "reviewed",
+      "reviewed": true
+    },
+    {
+      "id": "moegirl-miku-identity",
+      "content": "初音未来相关问答应聚焦其虚拟歌手、软件角色和文化符号身份。没有来源证据时，不补充角色关系清单或活动细节。",
+      "knowledge_id": "moegirl-doc-miku",
+      "knowledge_title": "初音未来",
+      "knowledge_filename": "moegirl/faq/初音未来/identity",
+      "knowledge_source": "Moegirl reviewed export",
+      "metadata": {
+        "url": "https://zh.moegirl.org.cn/初音未来",
+        "page_id": 1399,
+        "revision_id": "8291001",
+        "touched": "2026-06-24T08:00:00Z",
+        "categories": ["VOCALOID", "虚拟歌手"],
+        "fetched_at": "2026-06-25T04:00:00Z"
+      },
+      "review_status": "reviewed",
+      "reviewed": true
+    },
+    {
+      "id": "moegirl-miku-facts",
+      "content": "回答初音未来问题时必须带出来源和许可，只使用摘要级事实；不得把萌娘百科条目全文、图片、音频或页面结构复制进知识包。",
+      "knowledge_id": "moegirl-doc-miku",
+      "knowledge_title": "初音未来",
+      "knowledge_filename": "moegirl/faq/初音未来/facts",
+      "knowledge_source": "Moegirl reviewed export",
+      "metadata": {
+        "url": "https://zh.moegirl.org.cn/初音未来",
+        "page_id": 1399,
+        "revision_id": "8291001",
+        "touched": "2026-06-24T08:00:00Z",
+        "categories": ["VOCALOID", "虚拟歌手"],
+        "fetched_at": "2026-06-25T04:00:00Z"
+      },
+      "review_status": "reviewed",
+      "reviewed": true
+    }
+  ],
+  "prompts": [
+    {
+      "id": "moegirl-miku-overview-check",
+      "title": "验证初音未来概览",
+      "question": "初音未来是谁？"
+    },
+    {
+      "id": "moegirl-miku-identity-check",
+      "title": "验证初音未来身份",
+      "question": "初音未来的身份来源是什么？"
+    },
+    {
+      "id": "moegirl-miku-policy-check",
+      "title": "验证 Moegirl 摘要边界",
+      "question": "回答萌娘百科来源问题时有哪些引用和许可限制？"
+    }
+  ]
+}
