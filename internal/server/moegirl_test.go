@@ -375,7 +375,7 @@ func TestAdminMoegirlBuildReportsBoundedFetchSkipsAndCache(t *testing.T) {
 		decoded.CrawlReport.DuplicateTitles != 1 {
 		t.Fatalf("title counts = %+v", decoded.CrawlReport)
 	}
-	if decoded.CrawlReport.APIFetchRequests != 2 || decoded.CrawlReport.MaxBatchSize != 50 {
+	if decoded.CrawlReport.APIFetchRequests != 3 || decoded.CrawlReport.MaxBatchSize != 20 {
 		t.Fatalf("batch report = %+v", decoded.CrawlReport)
 	}
 	if decoded.CrawlReport.CacheHits != 1 {
@@ -389,6 +389,58 @@ func TestAdminMoegirlBuildReportsBoundedFetchSkipsAndCache(t *testing.T) {
 		if !reasons[reason] {
 			t.Fatalf("missing skipped reason %q in %+v", reason, decoded.CrawlReport.SkippedPages)
 		}
+	}
+}
+
+func TestAdminMoegirlBuildKeepsAuditMetadataForUncategorizedPages(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	moegirl := fakeLargeMoegirlSource(t, 1)
+	defer moegirl.Close()
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:                 t.TempDir(),
+		AdminToken:                 "test-admin-token",
+		KnowledgePackSigningSeed:   privateKey.Seed(),
+		MoegirlAPIURL:              moegirl.URL + "/api.php",
+		MoegirlSitemapIndexURL:     moegirl.URL + "/sitemap-index.xml",
+		MoegirlPublicArticleOrigin: "https://zh.moegirl.org.cn",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/moegirl-acgn-summary/moegirl/build-publish", bytes.NewBufferString(`{
+	  "version": "2026.06.25.uncategorized",
+	  "titles": ["测试角色001"]
+	}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("uncategorized build status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	packageResponse := httptest.NewRecorder()
+	handler.ServeHTTP(packageResponse, httptest.NewRequest("GET", "/kb/moegirl-acgn-summary/versions/2026.06.25.uncategorized/knowledge-pack.zip", nil))
+	if packageResponse.Code != http.StatusOK {
+		t.Fatalf("package status=%d body=%s", packageResponse.Code, packageResponse.Body.String())
+	}
+	citations := readZipEntry(t, packageResponse.Body.Bytes(), "citations.json")
+	var citationFile struct {
+		CrawlManifest []struct {
+			Categories []string `json:"categories"`
+		} `json:"crawl_manifest"`
+	}
+	if err := json.Unmarshal(citations, &citationFile); err != nil {
+		t.Fatalf("decode citations: %v", err)
+	}
+	if len(citationFile.CrawlManifest) != 1 || len(citationFile.CrawlManifest[0].Categories) != 1 || citationFile.CrawlManifest[0].Categories[0] != "uncategorized" {
+		t.Fatalf("crawl manifest categories = %+v", citationFile.CrawlManifest)
 	}
 }
 
@@ -458,8 +510,8 @@ func TestAdminMoegirlBuildHandlesThreeHundredPageMVPWithBoundedBatches(t *testin
 	if decoded.ChunkCount != 900 ||
 		decoded.CrawlReport.UniqueTitles != 300 ||
 		decoded.CrawlReport.AcceptedPages != 300 ||
-		decoded.CrawlReport.APIFetchRequests != 6 ||
-		decoded.CrawlReport.MaxBatchSize != 50 {
+		decoded.CrawlReport.APIFetchRequests != 15 ||
+		decoded.CrawlReport.MaxBatchSize != 20 {
 		t.Fatalf("300-page crawl report = %+v chunk_count=%d", decoded.CrawlReport, decoded.ChunkCount)
 	}
 	if decoded.BuildReport.FetchedPages != 300 ||
@@ -551,13 +603,14 @@ func fakeLargeMoegirlSource(t *testing.T, validPages int) *httptest.Server {
 	for index := 1; index <= validPages; index++ {
 		title := fmt.Sprintf("测试角色%03d", index)
 		pages[title] = moegirlFixturePage{
-			PageID:    10000 + index,
-			Namespace: 0,
-			Title:     title,
-			Extract:   title + "是用于 Moegirl FAQ 构建测试的公开条目摘要，包含足够长的介绍文本。",
-			FullURL:   "https://zh.moegirl.org.cn/" + title,
-			LastRevID: int64(9000000 + index),
-			Touched:   "2026-06-21T13:21:03Z",
+			PageID:         10000 + index,
+			Namespace:      0,
+			Title:          title,
+			Extract:        title + "是用于 Moegirl FAQ 构建测试的公开条目摘要，包含足够长的介绍文本。",
+			FullURL:        "https://zh.moegirl.org.cn/" + title,
+			LastRevID:      int64(9000000 + index),
+			Touched:        "2026-06-21T13:21:03Z",
+			OmitCategories: index == 1,
 		}
 	}
 	pages["测试角色001别名"] = pages["测试角色001"]
@@ -607,18 +660,23 @@ func fakeLargeMoegirlSource(t *testing.T, validPages int) *httptest.Server {
 }
 
 type moegirlFixturePage struct {
-	PageID    int
-	Namespace int
-	Title     string
-	Extract   string
-	FullURL   string
-	LastRevID int64
-	Touched   string
+	PageID         int
+	Namespace      int
+	Title          string
+	Extract        string
+	FullURL        string
+	LastRevID      int64
+	Touched        string
+	OmitCategories bool
 }
 
 func (page moegirlFixturePage) JSONFragment(key int) string {
+	categories := `,"categories":[{"ns":14,"title":"Category:测试分类"}]`
+	if page.OmitCategories {
+		categories = ""
+	}
 	return fmt.Sprintf(
-		`"%d":{"pageid":%d,"ns":%d,"title":%q,"extract":%q,"fullurl":%q,"lastrevid":%d,"touched":%q,"categories":[{"ns":14,"title":"Category:测试分类"}]}`,
+		`"%d":{"pageid":%d,"ns":%d,"title":%q,"extract":%q,"fullurl":%q,"lastrevid":%d,"touched":%q%s}`,
 		key,
 		page.PageID,
 		page.Namespace,
@@ -627,6 +685,7 @@ func (page moegirlFixturePage) JSONFragment(key int) string {
 		page.FullURL,
 		page.LastRevID,
 		page.Touched,
+		categories,
 	)
 }
 

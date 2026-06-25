@@ -23,7 +23,7 @@ const (
 	moegirlSourceName                 = "萌娘百科 (Moegirlpedia)"
 	moegirlLicense                    = "CC BY-NC-SA 3.0 CN"
 	moegirlSourcePolicy               = "summary-only with visible attribution; no full-article mirror; no AI training"
-	maxMoegirlTitlesPerRequest        = 50
+	maxMoegirlTitlesPerRequest        = 20
 	maxMoegirlPagesPerBuild           = 3000
 	defaultMoegirlSitemapLimit        = 50
 	maxMoegirlSummaryRunes            = 260
@@ -798,6 +798,9 @@ func moegirlCategoryNames(page moegirlAPIPage) []string {
 		if len(categories) >= 8 {
 			break
 		}
+	}
+	if len(categories) == 0 {
+		return []string{"uncategorized"}
 	}
 	return categories
 }
