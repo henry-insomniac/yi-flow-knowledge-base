@@ -31,6 +31,10 @@ required_terms=(
   "normalizeDraftChunkForCreate"
   "draftChunkPayloadForCreate"
   "auto-filled chunk_id/path/source"
+  "authStatus"
+  "Admin token missing"
+  "Admin token invalid or missing"
+  "Authorization: Bearer <token>"
 )
 
 missing=()

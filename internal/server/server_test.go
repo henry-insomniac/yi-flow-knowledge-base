@@ -3243,6 +3243,12 @@ func TestAdminPageOrganizesDashboardCategoriesAndSimplifiesChunkCreation(t *test
 		"slugifyChunkValue",
 		"draftChunkPayloadForCreate",
 		"auto-filled chunk_id/path/source",
+		`id="authStatus"`,
+		"Admin auth status",
+		"Admin token missing",
+		"Admin token invalid or missing",
+		`window.fetch = async`,
+		"Authorization: Bearer <token>",
 	} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("admin page missing dashboard/simplified create marker %q", expected)

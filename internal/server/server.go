@@ -432,6 +432,7 @@ const adminPageHTML = `<!doctype html>
       <label>Knowledge base ID <input id="kbID" value="yi-flow-core"></label>
     </div>
     <button id="saveToken" class="secondary">保存到本机浏览器</button>
+    <p id="authStatus" class="muted">Admin auth status: token not saved in this browser.</p>
   </section>
 
   <section id="dashboard-create" data-dashboard-category="create">
@@ -672,6 +673,7 @@ const adminPageHTML = `<!doctype html>
 const tokenInput = document.querySelector("#token");
 const kbIDInput = document.querySelector("#kbID");
 const output = document.querySelector("#output");
+const authStatus = document.querySelector("#authStatus");
 const versions = document.querySelector("#versions");
 const previewChunks = document.querySelector("#previewChunks");
 const previewRaw = document.querySelector("#previewRaw");
@@ -699,6 +701,7 @@ let draftChunkOffset = 0;
 let draftChunkPreviousOffset = 0;
 let draftChunkNextOffset = -1;
 tokenInput.value = localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
+updateAuthStatus();
 const defaultChunks = [
   {
     chunk_id: "topic-001",
@@ -750,8 +753,10 @@ fillWeKnoraExportTemplate(false);
 fillDraftTemplate(false);
 document.querySelector("#saveToken").onclick = () => {
   localStorage.setItem("yiFlowKnowledgeAdminToken", tokenInput.value);
-  output.textContent = "token saved locally";
+  updateAuthStatus();
+  output.textContent = token() ? "Admin token saved locally." : "Admin token cleared locally.";
 };
+tokenInput.addEventListener("input", updateAuthStatus);
 for (const selector of ["#draftChunkID", "#draftChunkTitle", "#draftChunkPath", "#draftChunkSource", "#draftChunkTags", "#draftChunkReviewStatus", "#draftCitationURL", "#draftCitationTitle", "#draftSourceName", "#draftLicense", "#draftSourcePolicy", "#draftSourceRevisionID", "#draftSourcePageID", "#draftChunkContent"]) {
   document.querySelector(selector).addEventListener("input", markDraftDirty);
   document.querySelector(selector).addEventListener("change", markDraftDirty);
@@ -761,6 +766,24 @@ for (const selector of ["#draftPromptID", "#draftPromptTitle", "#draftPromptExpe
   document.querySelector(selector).addEventListener("change", markDraftDirty);
 }
 function token() { return tokenInput.value || localStorage.getItem("yiFlowKnowledgeAdminToken") || ""; }
+function updateAuthStatus() {
+  const current = tokenInput.value || localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
+  authStatus.textContent = current
+    ? "Admin auth status: token loaded in this browser. Admin operations will send Authorization: Bearer <token>."
+    : "Admin auth status: token missing. Paste the Admin token and click 保存到本机浏览器 before creating, publishing, rolling back, or refreshing admin data.";
+}
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (resource, options = {}) => {
+  const url = typeof resource === "string" ? resource : (resource && resource.url) || "";
+  if (String(url).includes("/admin/api/") && !token()) {
+    const message = "Admin token missing. Paste the Admin token, click 保存到本机浏览器, then retry this operation.";
+    output.textContent = message;
+    updateAuthStatus();
+    tokenInput.focus();
+    return new Response(message, { status: 401, statusText: "Admin token missing" });
+  }
+  return nativeFetch(resource, options);
+};
 function kbID() { return kbIDInput.value.trim() || "yi-flow-core"; }
 function moegirlKBID() {
   const current = kbID();
@@ -961,6 +984,15 @@ function confirmDiscardDraftChanges() {
 }
 async function showResponse(response) {
   const text = await response.text();
+  if (response.status === 401) {
+    const message = text.includes("Admin token missing")
+      ? text
+      : "Admin token invalid or missing. Re-enter the Admin token, click 保存到本机浏览器, then retry.";
+    output.textContent = "401\n" + message;
+    updateAuthStatus();
+    tokenInput.focus();
+    return text;
+  }
   output.textContent = response.status + "\n" + text;
   return text;
 }
