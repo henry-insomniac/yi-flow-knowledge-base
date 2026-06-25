@@ -2838,6 +2838,106 @@ func TestAdminDraftReviewReportSamplesThirtyChunksAndCounts(t *testing.T) {
 	}
 }
 
+func TestAdminDraftChunkListPaginatesThousandChunks(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	chunks := make([]map[string]any, 0, 1000)
+	for index := 0; index < 1000; index++ {
+		chunks = append(chunks, map[string]any{
+			"chunk_id":      "page-chunk-" + strconv.Itoa(index),
+			"title":         "Page Chunk " + strconv.Itoa(index),
+			"path":          "page/chunk/" + strconv.Itoa(index),
+			"source":        "yi-flow-core",
+			"content":       "Pagination chunk content with enough length " + strconv.Itoa(index),
+			"review_status": "approved",
+		})
+	}
+	body, err := json.Marshal(map[string]any{
+		"chunks":    chunks,
+		"prompts":   []any{},
+		"citations": map[string]any{"citations": []any{}},
+	})
+	if err != nil {
+		t.Fatalf("encode paginated draft: %v", err)
+	}
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.pagination", string(body))
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save pagination draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	request := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.pagination/chunks?limit=50&offset=950", nil)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("paginated chunks status=%d body=%s", response.Code, response.Body.String())
+	}
+	var decoded struct {
+		Total      int `json:"total"`
+		Matched    int `json:"matched"`
+		Limit      int `json:"limit"`
+		Offset     int `json:"offset"`
+		NextOffset int `json:"next_offset"`
+		Chunks     []struct {
+			ChunkID string `json:"chunk_id"`
+		} `json:"chunks"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode paginated chunks: %v", err)
+	}
+	if decoded.Total != 1000 || decoded.Matched != 1000 || decoded.Limit != 50 || decoded.Offset != 950 || decoded.NextOffset != -1 || len(decoded.Chunks) != 50 || decoded.Chunks[0].ChunkID != "page-chunk-950" {
+		t.Fatalf("unexpected pagination response = %+v", decoded)
+	}
+}
+
+func TestAdminDraftBulkImportValidationReturnsFieldErrors(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.field-errors/import?dry_run=1", bytes.NewBufferString(`{
+	  "chunks": [{
+	    "chunk_id": "field-error",
+	    "title": "",
+	    "path": "field/error",
+	    "source": "yi-flow-core",
+	    "content": "Field errors should point to the title field."
+	  }],
+	  "prompts": [],
+	  "citations": {"citations":[]}
+	}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("field error status=%d body=%s", response.Code, response.Body.String())
+	}
+	var decoded struct {
+		Error       string `json:"error"`
+		FieldErrors []struct {
+			Field       string `json:"field"`
+			Remediation string `json:"remediation"`
+		} `json:"field_errors"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode field errors: %v", err)
+	}
+	if decoded.Error == "" || len(decoded.FieldErrors) != 1 || decoded.FieldErrors[0].Field != "chunks[0].title" || decoded.FieldErrors[0].Remediation == "" {
+		t.Fatalf("unexpected field errors = %+v body=%s", decoded, response.Body.String())
+	}
+}
+
 func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -2874,6 +2974,13 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 		"Chunk search",
 		"Review status",
 		"Review filter",
+		"Page size",
+		"limit=100",
+		"offset=0",
+		"next_offset",
+		"preserveUnsavedDraftOnError",
+		"@media (max-width: 720px)",
+		"field_errors",
 		"创建 chunk",
 		"更新 chunk",
 		"复制 chunk",

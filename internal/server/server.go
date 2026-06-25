@@ -271,6 +271,16 @@ const adminPageHTML = `<!doctype html>
     .compare-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 14px; }
     .compare-column { border: 1px solid #d9dfd2; border-radius: 8px; padding: 12px; background: #fffffb; }
     .compare-status { font-weight: 700; margin: 0 0 10px; }
+    .pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+    .pager button { min-width: 96px; }
+    @media (max-width: 720px) {
+      main { padding: 18px 12px 36px; }
+      h1 { font-size: 26px; }
+      section { padding: 14px; }
+      .grid, .compare-grid { grid-template-columns: 1fr; }
+      button { width: 100%; }
+      .pager button { width: auto; flex: 1 1 120px; }
+    }
   </style>
 </head>
 <body>
@@ -347,9 +357,15 @@ const adminPageHTML = `<!doctype html>
           <option value="rejected">rejected</option>
         </select>
       </label>
+      <label>Page size <input id="draftChunkPageSize" type="number" min="25" max="500" value="100"></label>
     </div>
     <button id="searchDraftChunks" class="secondary" type="button">搜索 chunks</button>
     <button id="auditDraftSources" class="secondary" type="button">审计 source metadata</button>
+    <div class="pager">
+      <button id="prevDraftChunkPage" class="secondary" type="button">上一页 chunks</button>
+      <button id="nextDraftChunkPage" class="secondary" type="button">下一页 chunks</button>
+      <span id="draftChunkPageStatus" class="muted">limit=100 · offset=0</span>
+    </div>
     <p id="draftStatus" class="muted">Draft workspace status: not saved</p>
     <div id="draftChunks" class="chunk-list"></div>
     <h3>Batch review</h3>
@@ -517,6 +533,7 @@ const lastWeKnoraExportVersion = document.querySelector("#lastWeKnoraExportVersi
 const lastWeKnoraQualityGate = document.querySelector("#lastWeKnoraQualityGate");
 const draftStatus = document.querySelector("#draftStatus");
 const draftChunksList = document.querySelector("#draftChunks");
+const draftChunkPageStatus = document.querySelector("#draftChunkPageStatus");
 const draftPromptsList = document.querySelector("#draftPrompts");
 const draftRetrievalResults = document.querySelector("#draftRetrievalResults");
 const servicePrefix = location.pathname.includes("/admin") ? location.pathname.split("/admin")[0] : "";
@@ -525,6 +542,9 @@ let lastWeKnoraDryRun = null;
 let selectedDraftChunkID = "";
 let selectedDraftPromptID = "";
 let draftDirty = false;
+let draftChunkOffset = 0;
+let draftChunkPreviousOffset = 0;
+let draftChunkNextOffset = -1;
 tokenInput.value = localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
 const defaultChunks = [
   {
@@ -740,6 +760,9 @@ function setDraftClean(message) {
   draftDirty = false;
   draftStatus.textContent = message;
 }
+function preserveUnsavedDraftOnError(message) {
+  draftStatus.textContent = message + " · unsaved editor content preserved";
+}
 function confirmDiscardDraftChanges() {
   if (!draftDirty) return true;
   return window.confirm("当前 chunk 有未保存修改，继续会丢失这些修改。");
@@ -779,7 +802,7 @@ document.querySelector("#saveDraft").onclick = async () => {
     });
     const text = await showResponse(response);
     if (!response.ok) {
-      draftStatus.textContent = "Draft workspace status: save failed";
+      preserveUnsavedDraftOnError("Draft workspace status: save failed");
       return;
     }
     const decoded = JSON.parse(text);
@@ -787,7 +810,7 @@ document.querySelector("#saveDraft").onclick = async () => {
     setDraftClean("Draft workspace status: saved · " + decoded.version + " · " + decoded.chunk_count + " chunks");
     await loadDraftChunkList();
   } catch (error) {
-    draftStatus.textContent = "Draft workspace status: save failed";
+    preserveUnsavedDraftOnError("Draft workspace status: save failed");
     output.textContent = "保存草稿失败：\n" + String(error);
   }
 };
@@ -799,7 +822,7 @@ document.querySelector("#loadDraft").onclick = async () => {
   });
   const text = await showResponse(response);
   if (!response.ok) {
-    draftStatus.textContent = "Draft workspace status: load failed";
+    preserveUnsavedDraftOnError("Draft workspace status: load failed");
     return;
   }
   const decoded = JSON.parse(text);
@@ -839,14 +862,14 @@ document.querySelector("#createDraftChunk").onclick = async () => {
     });
     const text = await showResponse(response);
     if (!response.ok) {
-      draftStatus.textContent = "Draft workspace status: create failed";
+      preserveUnsavedDraftOnError("Draft workspace status: create failed");
       return;
     }
     selectedDraftChunkID = payload.chunk_id;
     setDraftClean("Draft workspace status: created · " + selectedDraftChunkID);
     await loadDraftChunkList();
   } catch (error) {
-    draftStatus.textContent = "Draft workspace status: create failed";
+    preserveUnsavedDraftOnError("Draft workspace status: create failed");
     output.textContent = "创建 chunk 失败：\n" + String(error);
   }
 };
@@ -865,14 +888,14 @@ document.querySelector("#updateDraftChunk").onclick = async () => {
     });
     const text = await showResponse(response);
     if (!response.ok) {
-      draftStatus.textContent = "Draft workspace status: update failed";
+      preserveUnsavedDraftOnError("Draft workspace status: update failed");
       return;
     }
     selectedDraftChunkID = payload.chunk_id;
     setDraftClean("Draft workspace status: updated · " + selectedDraftChunkID);
     await loadDraftChunkList();
   } catch (error) {
-    draftStatus.textContent = "Draft workspace status: update failed";
+    preserveUnsavedDraftOnError("Draft workspace status: update failed");
     output.textContent = "更新 chunk 失败：\n" + String(error);
   }
 };
@@ -919,6 +942,18 @@ document.querySelector("#deleteDraftChunk").onclick = async () => {
   await loadDraftChunkList();
 };
 document.querySelector("#searchDraftChunks").onclick = async () => {
+  draftChunkOffset = 0;
+  draftChunkPreviousOffset = 0;
+  await loadDraftChunkList();
+};
+document.querySelector("#prevDraftChunkPage").onclick = async () => {
+  draftChunkOffset = draftChunkPreviousOffset;
+  await loadDraftChunkList();
+};
+document.querySelector("#nextDraftChunkPage").onclick = async () => {
+  if (draftChunkNextOffset < 0) return;
+  draftChunkPreviousOffset = draftChunkOffset;
+  draftChunkOffset = draftChunkNextOffset;
   await loadDraftChunkList();
 };
 document.querySelector("#auditDraftSources").onclick = async () => {
@@ -1256,24 +1291,36 @@ async function loadDraftChunkList() {
   const params = new URLSearchParams();
   const query = document.querySelector("#draftChunkSearch").value.trim();
   const reviewStatus = document.querySelector("#draftReviewFilter").value.trim();
+  const limit = draftChunkLimit();
   if (query) params.set("q", query);
   if (reviewStatus) params.set("review_status", reviewStatus);
+  params.set("limit", String(limit));
+  params.set("offset", String(draftChunkOffset));
   const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/chunks" + (params.toString() ? "?" + params.toString() : ""), {
     headers: { Authorization: "Bearer " + token() }
   });
   const text = await response.text();
   output.textContent = response.status + "\n" + text;
   if (!response.ok) {
-    draftChunksList.replaceChildren();
-    draftStatus.textContent = "Draft workspace status: list failed";
+    preserveUnsavedDraftOnError("Draft workspace status: list failed");
     return;
   }
   const decoded = JSON.parse(text);
-  renderDraftChunkList(decoded.chunks || [], decoded.total || 0, decoded.matched || 0);
+  draftChunkNextOffset = typeof decoded.next_offset === "number" ? decoded.next_offset : -1;
+  renderDraftChunkList(decoded.chunks || [], decoded.total || 0, decoded.matched || 0, decoded.limit || limit, decoded.offset || 0, draftChunkNextOffset);
   draftStatus.textContent = "Draft workspace status: listed · " + decoded.matched + "/" + decoded.total + " chunks";
 }
-function renderDraftChunkList(chunks, total, matched) {
+function draftChunkLimit() {
+  return Math.max(25, Math.min(500, Number(document.querySelector("#draftChunkPageSize").value || 100)));
+}
+function renderDraftChunkList(chunks, total, matched, limit, offset, nextOffset) {
+  offset = Number(offset || 0);
+  limit = Number(limit || chunks.length);
+  if (typeof nextOffset !== "number") nextOffset = -1;
   draftChunksList.replaceChildren(...chunks.map(renderDraftListChunk));
+  draftChunkPageStatus.textContent = "limit=" + String(limit) + " · offset=" + String(offset) + " · shown=" + String(chunks.length) + " · matched=" + String(matched);
+  document.querySelector("#prevDraftChunkPage").disabled = offset <= 0;
+  document.querySelector("#nextDraftChunkPage").disabled = nextOffset < 0;
   if (chunks.length === 0) {
     const empty = document.createElement("p");
     empty.className = "muted";
@@ -1663,7 +1710,13 @@ async function runDraftBulkImport(dryRun) {
   });
   const text = await showResponse(response);
   if (!response.ok) {
-    draftStatus.textContent = "Draft workspace status: bulk import failed";
+    preserveUnsavedDraftOnError("Draft workspace status: bulk import failed");
+    try {
+      const decoded = JSON.parse(text);
+      if (Array.isArray(decoded.field_errors)) {
+        output.textContent = response.status + "\n" + decoded.error + "\n" + decoded.field_errors.map((item) => item.field + ": " + item.remediation).join("\n");
+      }
+    } catch (_) {}
     return;
   }
   renderDraftReviewMaterials(JSON.parse(text), dryRun ? "Bulk import validation" : "Bulk import saved");

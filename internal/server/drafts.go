@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -220,15 +221,24 @@ func (h *Handler) handleListDraftChunks(w http.ResponseWriter, r *http.Request) 
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	reviewStatus := strings.TrimSpace(r.URL.Query().Get("review_status"))
 	chunks := filterDraftChunks(draft.Chunks, query, reviewStatus)
+	limit, offset, err := parsePaginationParams(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	pagedChunks, nextOffset := paginateDraftChunks(chunks, limit, offset)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"kb_id":    draft.KBID,
-		"version":  draft.Version,
-		"status":   draft.Status,
-		"total":    len(draft.Chunks),
-		"matched":  len(chunks),
-		"query":    query,
-		"chunks":   chunks,
-		"filtered": query != "" || reviewStatus != "",
+		"kb_id":       draft.KBID,
+		"version":     draft.Version,
+		"status":      draft.Status,
+		"total":       len(draft.Chunks),
+		"matched":     len(chunks),
+		"limit":       limit,
+		"offset":      offset,
+		"next_offset": nextOffset,
+		"query":       query,
+		"chunks":      pagedChunks,
+		"filtered":    query != "" || reviewStatus != "",
 	})
 }
 
@@ -941,6 +951,47 @@ func filterDraftChunks(chunks []knowledgePackBuildChunk, query string, reviewSta
 		filtered = append(filtered, chunk)
 	}
 	return filtered
+}
+
+func parsePaginationParams(r *http.Request) (int, int, error) {
+	values := r.URL.Query()
+	limit := 0
+	if rawLimit := strings.TrimSpace(values.Get("limit")); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 1 {
+			return 0, 0, fmt.Errorf("limit must be a positive integer")
+		}
+		if parsed > 500 {
+			parsed = 500
+		}
+		limit = parsed
+	}
+	offset := 0
+	if rawOffset := strings.TrimSpace(values.Get("offset")); rawOffset != "" {
+		parsed, err := strconv.Atoi(rawOffset)
+		if err != nil || parsed < 0 {
+			return 0, 0, fmt.Errorf("offset must be a non-negative integer")
+		}
+		offset = parsed
+	}
+	return limit, offset, nil
+}
+
+func paginateDraftChunks(chunks []knowledgePackBuildChunk, limit int, offset int) ([]knowledgePackBuildChunk, int) {
+	if limit <= 0 {
+		return chunks, -1
+	}
+	if offset >= len(chunks) {
+		return []knowledgePackBuildChunk{}, -1
+	}
+	end := offset + limit
+	nextOffset := -1
+	if end < len(chunks) {
+		nextOffset = end
+	} else {
+		end = len(chunks)
+	}
+	return chunks[offset:end], nextOffset
 }
 
 func draftChunkMatchesQuery(chunk knowledgePackBuildChunk, query string) bool {

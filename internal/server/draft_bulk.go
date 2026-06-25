@@ -27,6 +27,11 @@ type draftReviewReport struct {
 	SampledChunks        []knowledgePackBuildChunk `json:"sampled_chunks"`
 }
 
+type draftFieldError struct {
+	Field       string `json:"field"`
+	Remediation string `json:"remediation"`
+}
+
 func (h *Handler) handleDraftBulkImport(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -49,7 +54,10 @@ func (h *Handler) handleDraftBulkImport(w http.ResponseWriter, r *http.Request) 
 	}
 	draft, err := h.buildDraftDocument(kbID, version, payload)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":        err.Error(),
+			"field_errors": draftValidationFieldErrors(err),
+		})
 		return
 	}
 	qualityReport := evaluateDraftQuality(draft)
@@ -82,6 +90,69 @@ func (h *Handler) handleDraftBulkImport(w http.ResponseWriter, r *http.Request) 
 		"quality_status": qualityReport.Status,
 		"quality_report": qualityReport,
 	})
+}
+
+func draftValidationFieldErrors(err error) []draftFieldError {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	field := validationFieldFromMessage(message)
+	if field == "" {
+		field = "draft"
+	}
+	return []draftFieldError{{
+		Field:       field,
+		Remediation: validationRemediation(field, message),
+	}}
+}
+
+func validationFieldFromMessage(message string) string {
+	if strings.HasPrefix(message, "chunks must not be empty") {
+		return "chunks"
+	}
+	if strings.HasPrefix(message, "duplicate chunk_id") {
+		return "chunks[].chunk_id"
+	}
+	if strings.HasPrefix(message, "duplicate prompt id") {
+		return "prompts[].id"
+	}
+	token := strings.Fields(message)
+	if len(token) == 0 {
+		return ""
+	}
+	field := token[0]
+	if strings.Contains(field, "[") && strings.Contains(field, "].") {
+		return strings.TrimSpace(field)
+	}
+	return ""
+}
+
+func validationRemediation(field string, message string) string {
+	switch {
+	case field == "chunks":
+		return "至少添加 1 条 chunk 后重试。"
+	case strings.HasSuffix(field, ".chunk_id"):
+		return "补齐唯一 chunk_id，避免和已有 chunk 重复。"
+	case strings.HasSuffix(field, ".title"):
+		return "补齐 title 后重试。"
+	case strings.HasSuffix(field, ".path"):
+		return "补齐稳定 path，便于后续检索和溯源。"
+	case strings.HasSuffix(field, ".source"):
+		return "补齐 source，用于区分 manual、moegirl、yi-flow-core 等来源。"
+	case strings.HasSuffix(field, ".content"):
+		return "补齐 content，内容不能为空。"
+	case strings.HasSuffix(field, ".id"):
+		return "补齐唯一 prompt id，避免和已有 prompt 重复。"
+	case strings.HasSuffix(field, ".question"):
+		return "补齐 prompt question，质量门禁需要可执行问题。"
+	case strings.HasSuffix(field, ".expected_chunk_ids"):
+		return "确认 expected_chunk_ids 引用的 chunk_id 已存在。"
+	case strings.Contains(message, "moegirl source metadata"):
+		return "按 Moegirl source metadata 要求补齐 citation、license、source_policy 和页面元数据。"
+	default:
+		return "修正该字段后重新执行 dry-run。"
+	}
 }
 
 func (h *Handler) handleDraftExport(w http.ResponseWriter, r *http.Request) {
