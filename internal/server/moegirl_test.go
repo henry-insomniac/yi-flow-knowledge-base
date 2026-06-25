@@ -297,6 +297,123 @@ func TestAdminCanBuildMoegirlSummaryKnowledgePackFromSitemapLimit(t *testing.T) 
 	}
 }
 
+func TestAdminMoegirlBuildPrioritizesGoldenTitlesBeforeSitemapBackfill(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	moegirl := fakeMoegirlPrioritySource(t)
+	defer moegirl.Close()
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:                 t.TempDir(),
+		AdminToken:                 "test-admin-token",
+		KnowledgePackSigningSeed:   privateKey.Seed(),
+		MoegirlAPIURL:              moegirl.URL + "/api.php",
+		MoegirlSitemapIndexURL:     moegirl.URL + "/sitemap-index.xml",
+		MoegirlPublicArticleOrigin: "https://zh.moegirl.org.cn",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/moegirl-acgn-summary/moegirl/build-publish", bytes.NewBufferString(`{
+	  "version": "2026.06.25.priority",
+	  "priority_titles": ["核心角色"],
+	  "limit": 2
+	}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("priority build status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var decoded struct {
+		ChunkCount  int `json:"chunk_count"`
+		CrawlReport struct {
+			PriorityTitles   int `json:"priority_titles"`
+			DiscoveredTitles int `json:"discovered_titles"`
+			UniqueTitles     int `json:"unique_titles"`
+			AcceptedPages    int `json:"accepted_pages"`
+		} `json:"crawl_report"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode priority build response: %v", err)
+	}
+	if decoded.ChunkCount != 9 ||
+		decoded.CrawlReport.PriorityTitles != 1 ||
+		decoded.CrawlReport.DiscoveredTitles != 2 ||
+		decoded.CrawlReport.UniqueTitles != 3 ||
+		decoded.CrawlReport.AcceptedPages != 3 {
+		t.Fatalf("priority crawl report = %+v chunk_count=%d", decoded.CrawlReport, decoded.ChunkCount)
+	}
+
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, httptest.NewRequest("GET", "/kb/moegirl-acgn-summary/latest/preview?limit=9", nil))
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+	previewBody := previewResponse.Body.String()
+	for _, expected := range []string{"核心角色", "补充角色001", "补充角色002"} {
+		if !strings.Contains(previewBody, expected) {
+			t.Fatalf("preview missing priority/backfill title %q: %s", expected, previewBody)
+		}
+	}
+}
+
+func TestAdminMoegirlBuildFollowsMediaWikiRedirectsForPriorityTitles(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	moegirl := fakeMoegirlRedirectSource(t)
+	defer moegirl.Close()
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:                 t.TempDir(),
+		AdminToken:                 "test-admin-token",
+		KnowledgePackSigningSeed:   privateKey.Seed(),
+		MoegirlAPIURL:              moegirl.URL + "/api.php",
+		MoegirlSitemapIndexURL:     moegirl.URL + "/sitemap-index.xml",
+		MoegirlPublicArticleOrigin: "https://zh.moegirl.org.cn",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	request := httptest.NewRequest("POST", "/admin/api/kb/moegirl-acgn-summary/moegirl/build-publish", bytes.NewBufferString(`{
+	  "version": "2026.06.25.redirect",
+	  "priority_titles": ["镜音铃"],
+	  "title_aliases": {"镜音铃": ["铃和连"]},
+	  "limit": 0
+	}`))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("redirect build status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, httptest.NewRequest("GET", "/kb/moegirl-acgn-summary/latest/preview?limit=3", nil))
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+	previewBody := previewResponse.Body.String()
+	for _, expected := range []string{"镜音铃·连", "Kagamine Rin", "Kagamine Len", "铃和连"} {
+		if !strings.Contains(previewBody, expected) {
+			t.Fatalf("preview missing redirected content %q: %s", expected, previewBody)
+		}
+	}
+}
+
 func TestAdminMoegirlBuildReportsBoundedFetchSkipsAndCache(t *testing.T) {
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -588,6 +705,145 @@ func fakeMoegirlSource(t *testing.T) *httptest.Server {
 			  <url><loc>https://zh.moegirl.org.cn/东方Project</loc></url>
 			  <url><loc>https://zh.moegirl.org.cn/第三个页面</loc></url>
 			</urlset>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	baseURL = server.URL
+	return server
+}
+
+func fakeMoegirlPrioritySource(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	pages := map[string]moegirlFixturePage{
+		"核心角色": {
+			PageID:    41001,
+			Namespace: 0,
+			Title:     "核心角色",
+			Extract:   "核心角色是用于验证 golden priority titles 会优先进入 Moegirl FAQ 首包的公开条目摘要。",
+			FullURL:   "https://zh.moegirl.org.cn/核心角色",
+			LastRevID: 9600001,
+			Touched:   "2026-06-25T10:00:00Z",
+		},
+		"补充角色001": {
+			PageID:    41002,
+			Namespace: 0,
+			Title:     "补充角色001",
+			Extract:   "补充角色001是通过 sitemap backfill 加入 Moegirl FAQ 首包的公开条目摘要。",
+			FullURL:   "https://zh.moegirl.org.cn/补充角色001",
+			LastRevID: 9600002,
+			Touched:   "2026-06-25T10:00:00Z",
+		},
+		"补充角色002": {
+			PageID:    41003,
+			Namespace: 0,
+			Title:     "补充角色002",
+			Extract:   "补充角色002是通过 sitemap backfill 加入 Moegirl FAQ 首包的公开条目摘要。",
+			FullURL:   "https://zh.moegirl.org.cn/补充角色002",
+			LastRevID: 9600003,
+			Touched:   "2026-06-25T10:00:00Z",
+		},
+	}
+
+	var baseURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api.php":
+			titles := strings.Split(r.URL.Query().Get("titles"), "|")
+			pageFragments := make([]string, 0, len(titles))
+			for index, title := range titles {
+				title = strings.TrimSpace(title)
+				if title == "" {
+					continue
+				}
+				page, ok := pages[title]
+				if !ok {
+					http.Error(w, "unexpected title "+title, http.StatusBadRequest)
+					return
+				}
+				pageFragments = append(pageFragments, page.JSONFragment(50000+index))
+			}
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_, _ = io.WriteString(w, `{"batchcomplete":"","query":{"pages":{`+strings.Join(pageFragments, ",")+`}}}`)
+		case "/sitemap-index.xml":
+			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+			<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+			  <sitemap><loc>`+baseURL+`/sitemap-ns0.xml</loc></sitemap>
+			</sitemapindex>`)
+		case "/sitemap-ns0.xml":
+			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+			<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+			  <url><loc>https://zh.moegirl.org.cn/补充角色001</loc></url>
+			  <url><loc>https://zh.moegirl.org.cn/补充角色002</loc></url>
+			</urlset>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	baseURL = server.URL
+	return server
+}
+
+func fakeMoegirlRedirectSource(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	var baseURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api.php":
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			if r.URL.Query().Get("redirects") != "1" {
+				_, _ = io.WriteString(w, `{
+				  "batchcomplete": "",
+				  "query": {
+				    "pages": {
+				      "11926": {
+				        "pageid": 11926,
+				        "ns": 0,
+				        "title": "镜音铃",
+				        "extract": "",
+				        "fullurl": "https://zh.moegirl.org.cn/镜音铃",
+				        "lastrevid": 1634620,
+				        "touched": "2026-06-25T10:00:00Z"
+				      }
+				    }
+				  }
+				}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{
+			  "batchcomplete": "",
+			  "query": {
+			    "redirects": [{"from": "镜音铃", "to": "镜音铃·连"}],
+			    "pages": {
+			      "3955": {
+			        "pageid": 3955,
+			        "ns": 0,
+			        "title": "镜音铃·连",
+			        "extract": "镜音铃·连，即镜音铃（Kagamine Rin）与镜音连（Kagamine Len）的合称，是 Crypton Future Media 开发的 VOCALOID 声音库及角色形象。",
+			        "fullurl": "https://zh.moegirl.org.cn/镜音铃·连",
+			        "lastrevid": 8535999,
+			        "touched": "2026-06-25T10:00:00Z",
+			        "categories": [
+			          {"ns": 14, "title": "Category:VOCALOID角色"}
+			        ]
+			      }
+			    }
+			  }
+			}`)
+		case "/sitemap-index.xml":
+			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+			<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+			  <sitemap><loc>`+baseURL+`/sitemap-ns0.xml</loc></sitemap>
+			</sitemapindex>`)
+		case "/sitemap-ns0.xml":
+			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+			<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`)
 		default:
 			http.NotFound(w, r)
 		}

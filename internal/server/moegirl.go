@@ -30,28 +30,35 @@ const (
 )
 
 type moegirlBuildPublishRequest struct {
-	Version        string   `json:"version"`
-	Titles         []string `json:"titles"`
-	Limit          int      `json:"limit"`
-	LLMRecommended []string `json:"llm_recommended"`
+	Version        string              `json:"version"`
+	Titles         []string            `json:"titles"`
+	PriorityTitles []string            `json:"priority_titles"`
+	TitleAliases   map[string][]string `json:"title_aliases"`
+	Limit          int                 `json:"limit"`
+	LLMRecommended []string            `json:"llm_recommended"`
 }
 
 type moegirlAPIResponse struct {
 	Query struct {
+		Redirects []struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		} `json:"redirects"`
 		Pages map[string]moegirlAPIPage `json:"pages"`
 	} `json:"query"`
 }
 
 type moegirlAPIPage struct {
-	PageID     int              `json:"pageid"`
-	Namespace  int              `json:"ns"`
-	Title      string           `json:"title"`
-	Extract    string           `json:"extract"`
-	FullURL    string           `json:"fullurl"`
-	LastRevID  int64            `json:"lastrevid"`
-	Touched    string           `json:"touched"`
-	Missing    *json.RawMessage `json:"missing"`
-	Categories []struct {
+	PageID       int              `json:"pageid"`
+	Namespace    int              `json:"ns"`
+	Title        string           `json:"title"`
+	Extract      string           `json:"extract"`
+	FullURL      string           `json:"fullurl"`
+	LastRevID    int64            `json:"lastrevid"`
+	Touched      string           `json:"touched"`
+	Missing      *json.RawMessage `json:"missing"`
+	RedirectFrom []string         `json:"-"`
+	Categories   []struct {
 		Title string `json:"title"`
 	} `json:"categories"`
 }
@@ -104,6 +111,7 @@ type moegirlCrawlManifestEntry struct {
 
 type moegirlCrawlReport struct {
 	RequestedTitles  int                  `json:"requested_titles"`
+	PriorityTitles   int                  `json:"priority_titles,omitempty"`
 	UniqueTitles     int                  `json:"unique_titles"`
 	DuplicateTitles  int                  `json:"duplicate_titles"`
 	DiscoveredTitles int                  `json:"discovered_titles"`
@@ -212,21 +220,27 @@ func isMoegirlKnowledgePackID(kbID string) bool {
 
 func (h *Handler) moegirlBuildPayload(ctx context.Context, kbID string, request moegirlBuildPublishRequest) (buildPublishRequest, moegirlCrawlReport, error) {
 	titles, duplicateTitles := normalizeMoegirlTitlesWithReport(request.Titles)
+	priorityTitles, priorityDuplicateTitles := normalizeMoegirlTitlesWithReport(request.PriorityTitles)
 	crawlReport := moegirlCrawlReport{
 		RequestedTitles: len(request.Titles),
-		DuplicateTitles: duplicateTitles,
+		PriorityTitles:  len(priorityTitles),
+		DuplicateTitles: duplicateTitles + priorityDuplicateTitles,
+	}
+	if len(titles) > 0 && len(priorityTitles) > 0 {
+		return buildPublishRequest{}, crawlReport, fmt.Errorf("set either titles or priority_titles, not both")
 	}
 	if len(titles) == 0 {
 		discovered, err := h.discoverMoegirlTitles(ctx, moegirlSitemapLimit(request.Limit))
 		if err != nil {
 			return buildPublishRequest{}, crawlReport, err
 		}
-		titles = discovered
+		titles = mergeMoegirlTitleLists(priorityTitles, discovered, &crawlReport)
 		crawlReport.DiscoveredTitles = len(discovered)
 	}
 	if len(titles) == 0 {
 		return buildPublishRequest{}, crawlReport, fmt.Errorf("no Moegirl article titles were discovered")
 	}
+	titleAliases := normalizeMoegirlTitleAliases(request.TitleAliases)
 	if len(titles) > maxMoegirlPagesPerBuild {
 		for _, title := range titles[maxMoegirlPagesPerBuild:] {
 			crawlReport.SkippedPages = append(crawlReport.SkippedPages, moegirlSkippedPage{Title: title, Reason: "build_limit"})
@@ -255,7 +269,8 @@ func (h *Handler) moegirlBuildPayload(ctx context.Context, kbID string, request 
 	crawlManifest := make([]moegirlCrawlManifestEntry, 0, len(pages))
 	fetchedAt := time.Now().UTC().Format(time.RFC3339)
 	for _, page := range pages {
-		pageChunks := moegirlFAQChunksFromPage(page, h.moegirlPublicArticleOrigin)
+		aliases := moegirlAliasesForPage(page, titleAliases)
+		pageChunks := moegirlFAQChunksFromPage(page, h.moegirlPublicArticleOrigin, aliases)
 		publicURL := moegirlPublicURL(page, h.moegirlPublicArticleOrigin)
 		categories := moegirlCategoryNames(page)
 		chunks = append(chunks, pageChunks...)
@@ -499,6 +514,7 @@ func (h *Handler) fetchMoegirlPageBatch(ctx context.Context, titles []string) ([
 	query.Set("exintro", "1")
 	query.Set("explaintext", "1")
 	query.Set("cllimit", "20")
+	query.Set("redirects", "1")
 	query.Set("titles", strings.Join(titles, "|"))
 	apiURL.RawQuery = query.Encode()
 
@@ -521,6 +537,16 @@ func (h *Handler) fetchMoegirlPageBatch(ctx context.Context, titles []string) ([
 	var decoded moegirlAPIResponse
 	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
 		return nil, nil, fmt.Errorf("decode Moegirl API response: %w", err)
+	}
+
+	redirectFromByTitle := map[string][]string{}
+	for _, redirect := range decoded.Query.Redirects {
+		from := strings.TrimSpace(redirect.From)
+		to := strings.TrimSpace(redirect.To)
+		if from == "" || to == "" {
+			continue
+		}
+		redirectFromByTitle[to] = append(redirectFromByTitle[to], from)
 	}
 
 	pages := make([]moegirlAPIPage, 0, len(decoded.Query.Pages))
@@ -548,6 +574,7 @@ func (h *Handler) fetchMoegirlPageBatch(ctx context.Context, titles []string) ([
 			skipped = append(skipped, moegirlSkippedPage{Title: page.Title, Reason: "too_short_extract", PageID: page.PageID, RevisionID: revisionIDString(page.LastRevID)})
 			continue
 		}
+		page.RedirectFrom = normalizeMoegirlTitles(redirectFromByTitle[page.Title])
 		pages = append(pages, page)
 	}
 	sort.Slice(pages, func(i, j int) bool {
@@ -581,6 +608,64 @@ func normalizeMoegirlTitlesWithReport(titles []string) ([]string, int) {
 	return result, duplicates
 }
 
+func mergeMoegirlTitleLists(priorityTitles []string, discoveredTitles []string, crawlReport *moegirlCrawlReport) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(priorityTitles)+len(discoveredTitles))
+	for _, title := range append(priorityTitles, discoveredTitles...) {
+		title = strings.TrimSpace(title)
+		if title == "" {
+			continue
+		}
+		if seen[title] {
+			if crawlReport != nil {
+				crawlReport.DuplicateTitles++
+			}
+			continue
+		}
+		seen[title] = true
+		result = append(result, title)
+	}
+	return result
+}
+
+func normalizeMoegirlTitleAliases(raw map[string][]string) map[string][]string {
+	result := map[string][]string{}
+	for title, aliases := range raw {
+		title = strings.TrimSpace(title)
+		if title == "" {
+			continue
+		}
+		normalizedAliases, _ := normalizeMoegirlTitlesWithReport(aliases)
+		if len(normalizedAliases) > 0 {
+			result[title] = normalizedAliases
+		}
+	}
+	return result
+}
+
+func moegirlAliasesForPage(page moegirlAPIPage, titleAliases map[string][]string) []string {
+	candidates := []string{page.Title}
+	candidates = append(candidates, page.RedirectFrom...)
+	aliases := []string{}
+	for _, title := range candidates {
+		title = strings.TrimSpace(title)
+		if title == "" {
+			continue
+		}
+		aliases = append(aliases, title)
+		aliases = append(aliases, titleAliases[title]...)
+	}
+	normalizedAliases, _ := normalizeMoegirlTitlesWithReport(aliases)
+	return normalizedAliases
+}
+
+func moegirlAliasLine(aliases []string) string {
+	if len(aliases) == 0 {
+		return ""
+	}
+	return "【别名/检索词】" + strings.Join(aliases, "、")
+}
+
 func moegirlPageRevisionCacheKey(page moegirlAPIPage) string {
 	if page.PageID <= 0 || page.LastRevID <= 0 {
 		return ""
@@ -604,7 +689,7 @@ func sortMoegirlSkippedPages(skipped []moegirlSkippedPage) {
 	})
 }
 
-func moegirlFAQChunksFromPage(page moegirlAPIPage, articleOrigin string) []knowledgePackBuildChunk {
+func moegirlFAQChunksFromPage(page moegirlAPIPage, articleOrigin string, aliases []string) []knowledgePackBuildChunk {
 	categories := moegirlCategoryNames(page)
 	publicURL := moegirlPublicURL(page, articleOrigin)
 	summary := truncateRunes(page.Extract, maxMoegirlSummaryRunes)
@@ -612,36 +697,51 @@ func moegirlFAQChunksFromPage(page moegirlAPIPage, articleOrigin string) []knowl
 	if len(categories) > 0 {
 		categoryText = strings.Join(categories, "、")
 	}
+	aliasLine := moegirlAliasLine(aliases)
 
 	return []knowledgePackBuildChunk{
-		moegirlFAQChunk(page, "faq_overview", "是什么", []string{
+		moegirlFAQChunk(page, "faq_overview", "是什么", compactMoegirlContentParts([]string{
 			"【问题】" + page.Title + "是什么？",
+			aliasLine,
 			"【回答依据】" + summary,
 			"【适用意图】实体概览、是什么、简介。",
 			"【分类】" + categoryText,
 			moegirlSourceLine(publicURL),
 			moegirlLicenseLine(),
-		}),
-		moegirlFAQChunk(page, "faq_identity", "身份来源", []string{
+		})),
+		moegirlFAQChunk(page, "faq_identity", "身份来源", compactMoegirlContentParts([]string{
 			"【问题】" + page.Title + "来自哪里，如何定位？",
 			"【实体】" + page.Title,
+			aliasLine,
 			"【页面ID】" + strconv.Itoa(page.PageID),
 			"【修订】" + revisionIDString(page.LastRevID),
 			"【分类】" + categoryText,
 			"【回答边界】只根据该页面摘要和分类说明身份，不补充页面外设定。",
 			moegirlSourceLine(publicURL),
 			moegirlLicenseLine(),
-		}),
-		moegirlFAQChunk(page, "faq_facts", "核心事实", []string{
+		})),
+		moegirlFAQChunk(page, "faq_facts", "核心事实", compactMoegirlContentParts([]string{
 			"【问题】" + page.Title + "有哪些核心事实？",
+			aliasLine,
 			"【事实依据】" + summary,
 			"【可回答内容】名称、基本介绍、页面分类中出现的公开信息。",
 			"【不可回答内容】未在摘要或分类中出现的角色关系、剧情细节或完整设定列表。",
 			"【分类】" + categoryText,
 			moegirlSourceLine(publicURL),
 			moegirlLicenseLine(),
-		}),
+		})),
 	}
+}
+
+func compactMoegirlContentParts(parts []string) []string {
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
 }
 
 func moegirlFAQChunk(page moegirlAPIPage, faqType string, pathName string, contentParts []string) knowledgePackBuildChunk {

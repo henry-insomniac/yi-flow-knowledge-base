@@ -80,6 +80,164 @@ func TestEvaluateFilesReportsRetrievalCitationAndRefusalMetrics(t *testing.T) {
 	}
 }
 
+func TestEvaluateFilesMatchesExpectedRedirectAliasInChunkContent(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := filepath.Join(root, "manifest.json")
+	packagePath := filepath.Join(root, "knowledge-pack.zip")
+	goldenPath := filepath.Join(root, "golden.json")
+
+	writeEvalManifest(t, manifestPath, "moegirl-acgn-faq", "2026.06.redirect-eval")
+	writeEvalPackage(t, packagePath, []evalTestChunk{
+		{
+			ChunkID: "moegirl-page-467872-faq-overview",
+			Title:   "雷电影 · faq_overview",
+			Path:    "moegirl/faq/雷电影/是什么",
+			Source:  "萌娘百科 (Moegirlpedia)",
+			Content: "【别名/检索词】雷电影、雷电将军\n雷电将军是米哈游研发的游戏《原神》及其衍生作品的登场角色。",
+		},
+	})
+	writeGolden(t, goldenPath, []GoldenQuestion{
+		{
+			ID:             "entity-redirect-001",
+			Category:       "entity_overview",
+			Question:       "雷电将军是什么角色？",
+			ExpectedTitles: []string{"雷电将军"},
+			Answerable:     true,
+		},
+	})
+
+	report, err := EvaluateFiles(manifestPath, packagePath, goldenPath, Options{TopK: 5})
+	if err != nil {
+		t.Fatalf("evaluate files: %v", err)
+	}
+	if report.Top5HitRate != 1 || report.CitationRate != 1 || report.UnsupportedEntityCount != 0 {
+		t.Fatalf("redirect alias metrics = %+v", report)
+	}
+}
+
+func TestEvaluateFilesFallbackPrefersTitleSignalAndRejectsTitlelessNoise(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := filepath.Join(root, "manifest.json")
+	packagePath := filepath.Join(root, "knowledge-pack.zip")
+	goldenPath := filepath.Join(root, "golden.json")
+
+	writeEvalManifest(t, manifestPath, "moegirl-acgn-faq", "2026.06.title-signal")
+	writeEvalPackage(t, packagePath, []evalTestChunk{
+		{
+			ChunkID: "moegirl-page-437228-faq-overview",
+			Title:   "甘雨 · faq_overview",
+			Path:    "moegirl/faq/甘雨/是什么",
+			Source:  "萌娘百科 (Moegirlpedia)",
+			Content: "甘雨是米哈游研发的游戏《原神》及其衍生作品的登场角色。",
+		},
+		{
+			ChunkID: "moegirl-page-288956-faq-overview",
+			Title:   "2010版链缘无现里 · faq_overview",
+			Path:    "moegirl/faq/2010版链缘无现里/是什么",
+			Source:  "萌娘百科 (Moegirlpedia)",
+			Content: "该页面包含游戏、角色、配置等常见词，但标题与查询实体无关。",
+		},
+		{
+			ChunkID: "moegirl-page-217361-faq-overview",
+			Title:   "2016 -Third cosmic velocity- · faq_overview",
+			Path:    "moegirl/faq/2016-Third-cosmic-velocity/是什么",
+			Source:  "萌娘百科 (Moegirlpedia)",
+			Content: "该页面包含 iOS 查询里常见的 os 字母片段，但不应成为 Moegirl 命中。",
+		},
+		{
+			ChunkID: "moegirl-page-24101-faq-overview",
+			Title:   "163更新姬 · faq_overview",
+			Path:    "moegirl/faq/163更新姬/是什么",
+			Source:  "萌娘百科 (Moegirlpedia)",
+			Content: "该页面标题包含更新二字，但不能命中 yi-flow 知识包更新路径问题。",
+		},
+		{
+			ChunkID: "moegirl-page-317368-faq-overview",
+			Title:   "(K)NoW NAME · faq_overview",
+			Path:    "moegirl/faq/K-NoW-NAME/是什么",
+			Source:  "萌娘百科 (Moegirlpedia)",
+			Content: "括号内单字母 K 不能命中 OpenAI API key 这类域外问题。",
+		},
+	})
+	writeGolden(t, goldenPath, []GoldenQuestion{
+		{
+			ID:             "relation-title-001",
+			Category:       "relation_list",
+			Question:       "甘雨属于哪个游戏？",
+			ExpectedTitles: []string{"甘雨"},
+			Answerable:     true,
+		},
+		{
+			ID:         "refusal-titleless-001",
+			Category:   "out_of_domain",
+			Question:   "如何配置 iOS 真机测试脚本？",
+			Answerable: false,
+		},
+		{
+			ID:         "refusal-common-title-001",
+			Category:   "out_of_domain",
+			Question:   "yi-flow 知识包更新路径是什么？",
+			Answerable: false,
+		},
+		{
+			ID:         "refusal-single-letter-001",
+			Category:   "out_of_domain",
+			Question:   "OpenAI API key 应该怎么设置？",
+			Answerable: false,
+		},
+	})
+
+	report, err := EvaluateFiles(manifestPath, packagePath, goldenPath, Options{TopK: 5})
+	if err != nil {
+		t.Fatalf("evaluate files: %v", err)
+	}
+	if report.Top1HitRate != 1 || report.Top5HitRate != 1 || report.RefusalPassRate != 1 {
+		t.Fatalf("title-signal metrics = %+v", report)
+	}
+}
+
+func TestEvaluateFilesFallbackAliasSignalOutranksFTSNoise(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := filepath.Join(root, "manifest.json")
+	packagePath := filepath.Join(root, "knowledge-pack.zip")
+	goldenPath := filepath.Join(root, "golden.json")
+
+	writeEvalManifest(t, manifestPath, "moegirl-acgn-faq", "2026.06.alias-signal")
+	writeEvalPackage(t, packagePath, []evalTestChunk{
+		{
+			ChunkID: "moegirl-page-1399-faq-overview",
+			Title:   "初音未来 · faq_overview",
+			Path:    "moegirl/faq/初音未来/是什么",
+			Source:  "萌娘百科 (Moegirlpedia)",
+			Content: "【别名/检索词】初音未来、Miku、MIKU\n初音未来是 Crypton Future Media 的 VOCALOID 声音库及角色形象。",
+		},
+		{
+			ChunkID: "moegirl-page-317368-faq-overview",
+			Title:   "MikuMikuDance · faq_overview",
+			Path:    "moegirl/faq/MikuMikuDance/是什么",
+			Source:  "萌娘百科 (Moegirlpedia)",
+			Content: "MikuMikuDance 是包含 Miku 词面的软件条目，但不是这个问题要找的人物条目。",
+		},
+	})
+	writeGolden(t, goldenPath, []GoldenQuestion{
+		{
+			ID:             "alias-signal-001",
+			Category:       "alias_redirect",
+			Question:       "Miku 指的是谁？",
+			ExpectedTitles: []string{"初音未来"},
+			Answerable:     true,
+		},
+	})
+
+	report, err := EvaluateFiles(manifestPath, packagePath, goldenPath, Options{TopK: 5})
+	if err != nil {
+		t.Fatalf("evaluate files: %v", err)
+	}
+	if report.Top1HitRate != 1 || report.CitationRate != 1 || report.UnsupportedEntityCount != 0 {
+		t.Fatalf("alias-signal metrics = %+v", report)
+	}
+}
+
 type evalTestChunk struct {
 	ChunkID string
 	Title   string

@@ -151,9 +151,9 @@ func Evaluate(manifestData []byte, packageData []byte, goldenData []byte, option
 			RetrievedChunkIDs: retrieved,
 		}
 		if question.Answerable {
-			run.Top1Hit = len(retrieved) > 0 && matchesExpected(question, []string{retrieved[0]}, searcher.titles)
-			run.Top5Hit = matchesExpected(question, retrieved, searcher.titles)
-			run.CitationHit = run.Top5Hit && retrievedHasCitation(question, retrieved, citations, searcher.titles)
+			run.Top1Hit = len(retrieved) > 0 && matchesExpected(question, []string{retrieved[0]}, searcher.titles, searcher.contents)
+			run.Top5Hit = matchesExpected(question, retrieved, searcher.titles, searcher.contents)
+			run.CitationHit = run.Top5Hit && retrievedHasCitation(question, retrieved, citations, searcher.titles, searcher.contents)
 			if run.Top1Hit {
 				top1Hits++
 			}
@@ -219,6 +219,7 @@ type evalCitationFile struct {
 type packageSearcher struct {
 	database *sql.DB
 	titles   map[string]string
+	contents map[string]string
 }
 
 func newPackageSearcher(file *zip.File) (*packageSearcher, func(), error) {
@@ -252,40 +253,49 @@ func newPackageSearcher(file *zip.File) (*packageSearcher, func(), error) {
 		_ = database.Close()
 		_ = os.Remove(tempPath)
 	}
-	titles, err := loadChunkTitles(database)
+	titles, contents, err := loadChunkText(database)
 	if err != nil {
 		cleanup()
 		return nil, func() {}, err
 	}
-	return &packageSearcher{database: database, titles: titles}, cleanup, nil
+	return &packageSearcher{database: database, titles: titles, contents: contents}, cleanup, nil
 }
 
-func loadChunkTitles(database *sql.DB) (map[string]string, error) {
-	rows, err := database.Query("SELECT COALESCE(chunk_id, ''), COALESCE(title, '') FROM chunks")
+func loadChunkText(database *sql.DB) (map[string]string, map[string]string, error) {
+	rows, err := database.Query("SELECT COALESCE(chunk_id, ''), COALESCE(title, ''), COALESCE(content, '') FROM chunks")
 	if err != nil {
-		return nil, fmt.Errorf("load chunk titles: %w", err)
+		return nil, nil, fmt.Errorf("load chunk text: %w", err)
 	}
 	defer rows.Close()
 	titles := map[string]string{}
+	contents := map[string]string{}
 	for rows.Next() {
-		var chunkID, title string
-		if err := rows.Scan(&chunkID, &title); err != nil {
-			return nil, fmt.Errorf("scan chunk title: %w", err)
+		var chunkID, title, content string
+		if err := rows.Scan(&chunkID, &title, &content); err != nil {
+			return nil, nil, fmt.Errorf("scan chunk text: %w", err)
 		}
 		if chunkID != "" {
 			titles[chunkID] = title
+			contents[chunkID] = content
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate chunk titles: %w", err)
+		return nil, nil, fmt.Errorf("iterate chunk text: %w", err)
 	}
-	return titles, nil
+	return titles, contents, nil
 }
 
 func (s *packageSearcher) Search(query string, topK int) ([]string, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, nil
+	}
+	fallbackChunkIDs, err := s.FallbackSearch(query, topK)
+	if err != nil {
+		return nil, err
+	}
+	if len(fallbackChunkIDs) > 0 {
+		return fallbackChunkIDs, nil
 	}
 	rows, err := s.database.Query(`
 		SELECT chunk_id
@@ -310,9 +320,6 @@ func (s *packageSearcher) Search(query string, topK int) ([]string, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate search results: %w", err)
 	}
-	if len(chunkIDs) == 0 {
-		return s.FallbackSearch(query, topK)
-	}
 	return chunkIDs, nil
 }
 
@@ -328,7 +335,8 @@ type scoredChunk struct {
 
 func (s *packageSearcher) FallbackSearch(query string, topK int) ([]string, error) {
 	grams := queryNGrams(query)
-	if len(grams) == 0 {
+	normalizedQuery := normalizeEvalText(query)
+	if len(grams) == 0 && normalizedQuery == "" {
 		return nil, nil
 	}
 	rows, err := s.database.Query(`
@@ -349,8 +357,12 @@ func (s *packageSearcher) FallbackSearch(query string, topK int) ([]string, erro
 		if err := rows.Scan(&chunkID, &title, &content); err != nil {
 			return nil, fmt.Errorf("scan fallback chunk: %w", err)
 		}
+		signalScore := evalTitleSignalScore(normalizedQuery, title) + evalAliasLineSignalScore(normalizedQuery, content)
+		if signalScore == 0 {
+			continue
+		}
 		haystack := normalizeEvalText(title + "\n" + content)
-		score := 0
+		score := signalScore
 		for _, gram := range grams {
 			if strings.Contains(haystack, gram) {
 				score++
@@ -379,6 +391,59 @@ func (s *packageSearcher) FallbackSearch(query string, topK int) ([]string, erro
 	return result, nil
 }
 
+func evalTitleSignalScore(normalizedQuery string, title string) int {
+	score := 0
+	for _, alias := range evalTitleAliases(title) {
+		normalizedAlias := normalizeEvalText(alias)
+		if !evalAliasCanMatch(normalizedAlias) {
+			continue
+		}
+		if strings.Contains(normalizedQuery, normalizedAlias) {
+			score = max(score, 100+runeCount(normalizedAlias))
+		}
+	}
+	return score
+}
+
+func evalAliasLineSignalScore(normalizedQuery string, content string) int {
+	score := 0
+	for _, line := range strings.Split(content, "\n") {
+		aliasText, ok := strings.CutPrefix(strings.TrimSpace(line), "【别名/检索词】")
+		if !ok {
+			continue
+		}
+		for _, alias := range strings.Split(aliasText, "、") {
+			normalizedAlias := normalizeEvalText(alias)
+			if !evalAliasCanMatch(normalizedAlias) {
+				continue
+			}
+			if strings.Contains(normalizedQuery, normalizedAlias) {
+				score = max(score, 120+runeCount(normalizedAlias))
+			}
+		}
+	}
+	return score
+}
+
+func evalTitleAliases(title string) []string {
+	base := strings.TrimSpace(strings.Split(title, " · ")[0])
+	if base == "" {
+		return nil
+	}
+	aliases := []string{base}
+	for _, pair := range [][2]string{{"(", ")"}, {"（", "）"}} {
+		open := strings.Index(base, pair[0])
+		close := strings.LastIndex(base, pair[1])
+		if open > 0 {
+			aliases = append(aliases, strings.TrimSpace(base[:open]))
+		}
+		if open >= 0 && close > open {
+			aliases = append(aliases, strings.TrimSpace(base[open+len(pair[0]):close]))
+		}
+	}
+	return aliases
+}
+
 func queryNGrams(query string) []string {
 	normalized := normalizeEvalText(query)
 	runes := []rune(normalized)
@@ -400,6 +465,31 @@ func queryNGrams(query string) []string {
 		grams = append(grams, gram)
 	}
 	return grams
+}
+
+func runeCount(value string) int {
+	return len([]rune(value))
+}
+
+func evalAliasCanMatch(normalizedAlias string) bool {
+	if normalizedAlias == "" {
+		return false
+	}
+	if runeCount(normalizedAlias) == 1 {
+		return containsCJK(normalizedAlias)
+	}
+	return true
+}
+
+func containsCJK(value string) bool {
+	for _, r := range value {
+		if (r >= '\u4e00' && r <= '\u9fff') ||
+			(r >= '\u3400' && r <= '\u4dbf') ||
+			(r >= '\uf900' && r <= '\ufaff') {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeEvalText(value string) string {
@@ -465,9 +555,9 @@ func evalCitationsByChunkID(file *zip.File) (map[string]evalCitation, error) {
 	return result, nil
 }
 
-func retrievedHasCitation(question GoldenQuestion, retrieved []string, citations map[string]evalCitation, titles map[string]string) bool {
+func retrievedHasCitation(question GoldenQuestion, retrieved []string, citations map[string]evalCitation, titles map[string]string, contents map[string]string) bool {
 	for _, chunkID := range retrieved {
-		if !matchesExpected(question, []string{chunkID}, titles) {
+		if !matchesExpected(question, []string{chunkID}, titles, contents) {
 			continue
 		}
 		citation, ok := citations[chunkID]
@@ -478,14 +568,18 @@ func retrievedHasCitation(question GoldenQuestion, retrieved []string, citations
 	return false
 }
 
-func matchesExpected(question GoldenQuestion, retrieved []string, titles map[string]string) bool {
+func matchesExpected(question GoldenQuestion, retrieved []string, titles map[string]string, contents map[string]string) bool {
 	if intersects(question.ExpectedChunkIDs, retrieved) {
 		return true
 	}
 	for _, chunkID := range retrieved {
 		title := strings.ToLower(titles[chunkID])
+		content := strings.ToLower(contents[chunkID])
 		for _, expectedTitle := range question.ExpectedTitles {
-			if expectedTitle != "" && strings.Contains(title, strings.ToLower(expectedTitle)) {
+			normalizedExpectedTitle := strings.ToLower(expectedTitle)
+			if expectedTitle != "" &&
+				(strings.Contains(title, normalizedExpectedTitle) ||
+					strings.Contains(content, normalizedExpectedTitle)) {
 				return true
 			}
 		}

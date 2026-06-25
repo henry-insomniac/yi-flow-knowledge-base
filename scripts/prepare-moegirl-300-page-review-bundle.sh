@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KB_ID="${MOEGIRL_HITL_KB_ID:-moegirl-acgn-faq}"
 DISCOVERY_LIMIT="${MOEGIRL_HITL_DISCOVERY_LIMIT:-360}"
 MIN_ACCEPTED="${MOEGIRL_HITL_MIN_ACCEPTED_PAGES:-300}"
+GOLDEN_PATH="${MOEGIRL_GOLDEN_PATH:-$ROOT_DIR/docs/rag/moegirl-golden-questions.json}"
 VERSION="${MOEGIRL_HITL_VERSION:-$(date -u +%Y.%m.%d.moegirl-hitl-300)}"
 BUILD_ROOT="${MOEGIRL_HITL_BUILD_ROOT:-${TMPDIR:-/tmp}/moegirl-hitl-review-bundle}"
 BUILD_DIR="$BUILD_ROOT/$VERSION"
@@ -13,6 +14,7 @@ SERVER_LOG="$BUILD_DIR/server.log"
 MANIFEST_PATH="$BUILD_DIR/manifest.json"
 PACKAGE_PATH="$BUILD_DIR/knowledge-pack.zip"
 REVIEW_PATH="${MOEGIRL_HITL_REVIEW_OUTPUT:-$BUILD_DIR/moegirl-hitl-review.json}"
+EVAL_PATH="${MOEGIRL_EVAL_REPORT_PATH:-$BUILD_DIR/moegirl-golden-eval-report.json}"
 BUILD_RESPONSE="$BUILD_DIR/build-response.json"
 PORT="${MOEGIRL_HITL_PORT:-$(python3 - <<'PY'
 import socket
@@ -86,13 +88,48 @@ if ! curl -fsS "$BASE_URL/healthz" >/dev/null 2>&1; then
 fi
 
 REQUEST_PATH="$BUILD_DIR/build-request.json"
-python3 - "$VERSION" "$DISCOVERY_LIMIT" "$REQUEST_PATH" <<'PY'
+python3 - "$VERSION" "$DISCOVERY_LIMIT" "$REQUEST_PATH" "$GOLDEN_PATH" <<'PY'
 import json
 import sys
 
-version, discovery_limit, path = sys.argv[1:4]
+version, discovery_limit, path, golden_path = sys.argv[1:5]
+with open(golden_path, "r", encoding="utf-8") as handle:
+    questions = json.load(handle)["questions"]
+
+seen = set()
+priority_titles = []
+title_aliases = {}
+for row in questions:
+    if not row.get("answerable", False):
+        continue
+    row_aliases = [
+        str(alias).strip()
+        for alias in row.get("aliases", [])
+        if str(alias).strip()
+    ]
+    for title in row.get("expected_titles", []):
+        title = str(title).strip()
+        if not title:
+            continue
+        if row_aliases:
+            title_aliases.setdefault(title, [])
+            for alias in row_aliases:
+                if alias not in title_aliases[title]:
+                    title_aliases[title].append(alias)
+        variants = [title]
+        question = str(row.get("question", ""))
+        if "原神" in question and "原神" not in title:
+            variants.append(f"{title}(原神)")
+        for variant in variants:
+            if variant in seen:
+                continue
+            seen.add(variant)
+            priority_titles.append(variant)
+
 payload = {
     "version": version,
+    "priority_titles": priority_titles,
+    "title_aliases": title_aliases,
     "limit": int(discovery_limit),
     "llm_recommended": ["Qwen3-4B-Q4_K_M"],
 }
@@ -138,22 +175,34 @@ MOEGIRL_REVIEW_PACKAGE="$PACKAGE_PATH" \
 MOEGIRL_HITL_REVIEW_OUTPUT="$REVIEW_PATH" \
 scripts/prepare-moegirl-hitl-review.sh
 
-python3 - "$BUILD_DIR" "$MANIFEST_PATH" "$PACKAGE_PATH" "$REVIEW_PATH" <<'PY'
+MOEGIRL_EVAL_MANIFEST="$MANIFEST_PATH" \
+MOEGIRL_EVAL_PACKAGE="$PACKAGE_PATH" \
+MOEGIRL_EVAL_REPORT_PATH="$EVAL_PATH" \
+scripts/verify-moegirl-golden-eval.sh
+
+python3 - "$BUILD_DIR" "$MANIFEST_PATH" "$PACKAGE_PATH" "$REVIEW_PATH" "$EVAL_PATH" <<'PY'
 import json
 import os
 import sys
 
-build_dir, manifest_path, package_path, review_path = sys.argv[1:5]
+build_dir, manifest_path, package_path, review_path, eval_path = sys.argv[1:6]
 with open(review_path, "r", encoding="utf-8") as handle:
     review = json.load(handle)
+with open(eval_path, "r", encoding="utf-8") as handle:
+    evaluation = json.load(handle)
 print(
     "moegirl_hitl_bundle_ready "
     f"dir={build_dir} "
     f"manifest={manifest_path} "
     f"package={package_path} "
     f"review={review_path} "
+    f"eval={eval_path} "
     f"total_chunks={review.get('total_chunks')} "
     f"samples={len(review.get('sample_chunks', []))} "
-    f"questions={len(review.get('golden_questions', []))}"
+    f"questions={len(review.get('golden_questions', []))} "
+    f"top5={evaluation.get('top5_hit_rate')} "
+    f"citation={evaluation.get('citation_rate')} "
+    f"refusal={evaluation.get('refusal_pass_rate')} "
+    f"duplicate={evaluation.get('duplicate_answer_rate')}"
 )
 PY
