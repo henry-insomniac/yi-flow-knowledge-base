@@ -2620,6 +2620,224 @@ func TestAdminDraftPublishLatestRollbackAndAuditLog(t *testing.T) {
 	}
 }
 
+func TestAdminDraftBulkImportExportReviewQueueAndGateBoundary(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	body := `{
+	  "chunks": [
+	    {
+	      "chunk_id": "bulk-alpha",
+	      "title": "Bulk Alpha",
+	      "path": "bulk/alpha",
+	      "source": "yi-flow-core",
+	      "content": "Bulk alpha content is ready for review queue operations.",
+	      "review_status": "needs_review",
+	      "citation_url": "https://yi-flow.com/docs/bulk-alpha",
+	      "citation_title": "Bulk Alpha",
+	      "source_name": "yi-flow docs",
+	      "license": "reviewed internal knowledge",
+	      "source_policy": "reviewed yi-flow product chunks only"
+	    },
+	    {
+	      "chunk_id": "bulk-missing-citation",
+	      "title": "Bulk Missing Citation",
+	      "path": "bulk/missing",
+	      "source": "yi-flow-core",
+	      "content": "Bulk missing citation content should stay blocked by quality gates.",
+	      "review_status": "draft"
+	    },
+	    {
+	      "chunk_id": "bulk-approved",
+	      "title": "Bulk Approved",
+	      "path": "bulk/approved",
+	      "source": "yi-flow-core",
+	      "content": "Bulk approved content keeps the export path deterministic.",
+	      "review_status": "approved",
+	      "citation_url": "https://yi-flow.com/docs/bulk-approved",
+	      "citation_title": "Bulk Approved",
+	      "source_name": "yi-flow docs",
+	      "license": "reviewed internal knowledge",
+	      "source_policy": "reviewed yi-flow product chunks only"
+	    }
+	  ],
+	  "prompts": [
+	    {
+	      "id": "bulk-alpha-question",
+	      "title": "Bulk alpha",
+	      "question": "What is ready for review queue operations?",
+	      "expected_chunk_ids": ["bulk-alpha"],
+	      "answerability": "answerable",
+	      "answerable": true
+	    }
+	  ],
+	  "citations": {"citations":[]}
+	}`
+
+	dryRun := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.bulk/import?dry_run=1", bytes.NewBufferString(body))
+	dryRun.Header.Set("Authorization", "Bearer test-admin-token")
+	dryRun.Header.Set("Content-Type", "application/json")
+	dryRunResponse := httptest.NewRecorder()
+	handler.ServeHTTP(dryRunResponse, dryRun)
+	if dryRunResponse.Code != http.StatusOK {
+		t.Fatalf("bulk import dry-run status=%d body=%s", dryRunResponse.Code, dryRunResponse.Body.String())
+	}
+	var validation struct {
+		DryRun        bool `json:"dry_run"`
+		WouldSave     bool `json:"would_save"`
+		ChunkCount    int  `json:"chunk_count"`
+		QualityReport struct {
+			Status       string `json:"status"`
+			BlockPublish bool   `json:"block_publish"`
+		} `json:"quality_report"`
+	}
+	if err := json.Unmarshal(dryRunResponse.Body.Bytes(), &validation); err != nil {
+		t.Fatalf("decode dry-run validation: %v", err)
+	}
+	if !validation.DryRun || validation.WouldSave || validation.ChunkCount != 3 || validation.QualityReport.Status != "failed" || !validation.QualityReport.BlockPublish {
+		t.Fatalf("unexpected dry-run validation = %+v", validation)
+	}
+	getBeforeSave := httptest.NewRecorder()
+	requestBeforeSave := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.bulk", nil)
+	requestBeforeSave.Header.Set("Authorization", "Bearer test-admin-token")
+	handler.ServeHTTP(getBeforeSave, requestBeforeSave)
+	if getBeforeSave.Code != http.StatusNotFound {
+		t.Fatalf("bulk dry-run should not save draft status=%d body=%s", getBeforeSave.Code, getBeforeSave.Body.String())
+	}
+
+	importRequest := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.bulk/import", bytes.NewBufferString(body))
+	importRequest.Header.Set("Authorization", "Bearer test-admin-token")
+	importRequest.Header.Set("Content-Type", "application/json")
+	importResponse := httptest.NewRecorder()
+	handler.ServeHTTP(importResponse, importRequest)
+	if importResponse.Code != http.StatusCreated {
+		t.Fatalf("bulk import status=%d body=%s", importResponse.Code, importResponse.Body.String())
+	}
+
+	exportRequest := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.bulk/export", nil)
+	exportRequest.Header.Set("Authorization", "Bearer test-admin-token")
+	exportResponse := httptest.NewRecorder()
+	handler.ServeHTTP(exportResponse, exportRequest)
+	if exportResponse.Code != http.StatusOK {
+		t.Fatalf("bulk export status=%d body=%s", exportResponse.Code, exportResponse.Body.String())
+	}
+	for _, expected := range []string{`"chunks"`, `"prompts"`, `"citations"`} {
+		if !strings.Contains(exportResponse.Body.String(), expected) {
+			t.Fatalf("bulk export missing %s: %s", expected, exportResponse.Body.String())
+		}
+	}
+
+	queueRequest := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.bulk/review-queue?filter=missing_citation", nil)
+	queueRequest.Header.Set("Authorization", "Bearer test-admin-token")
+	queueResponse := httptest.NewRecorder()
+	handler.ServeHTTP(queueResponse, queueRequest)
+	if queueResponse.Code != http.StatusOK {
+		t.Fatalf("review queue status=%d body=%s", queueResponse.Code, queueResponse.Body.String())
+	}
+	if !strings.Contains(queueResponse.Body.String(), "bulk-missing-citation") || strings.Contains(queueResponse.Body.String(), "bulk-approved") {
+		t.Fatalf("missing citation queue mismatch: %s", queueResponse.Body.String())
+	}
+
+	gateRequest := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.bulk/quality-gates", nil)
+	gateRequest.Header.Set("Authorization", "Bearer test-admin-token")
+	gateResponse := httptest.NewRecorder()
+	handler.ServeHTTP(gateResponse, gateRequest)
+	if gateResponse.Code != http.StatusOK || !strings.Contains(gateResponse.Body.String(), `"block_publish":true`) {
+		t.Fatalf("bulk import must not bypass quality gates status=%d body=%s", gateResponse.Code, gateResponse.Body.String())
+	}
+}
+
+func TestAdminDraftReviewReportSamplesThirtyChunksAndCounts(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	chunks := make([]map[string]any, 0, 35)
+	for index := 0; index < 35; index++ {
+		content := "Review report sampled content " + strconv.Itoa(index)
+		if index == 33 || index == 34 {
+			content = "Review report duplicate sampled content"
+		}
+		chunk := map[string]any{
+			"chunk_id":       "review-sample-" + strconv.Itoa(index),
+			"title":          "Review Sample " + strconv.Itoa(index),
+			"path":           "review/sample/" + strconv.Itoa(index),
+			"source":         "yi-flow-core",
+			"content":        content,
+			"review_status":  "approved",
+			"citation_url":   "https://yi-flow.com/docs/review/" + strconv.Itoa(index),
+			"citation_title": "Review Sample " + strconv.Itoa(index),
+			"source_name":    "yi-flow docs",
+			"license":        "reviewed internal knowledge",
+			"source_policy":  "reviewed yi-flow product chunks only",
+		}
+		if index == 1 {
+			delete(chunk, "citation_url")
+			delete(chunk, "license")
+			delete(chunk, "source_policy")
+		}
+		chunks = append(chunks, chunk)
+	}
+	body, err := json.Marshal(map[string]any{
+		"chunks": chunks,
+		"prompts": []map[string]any{{
+			"id":                 "review-sample-question",
+			"title":              "Review sample",
+			"question":           "What does the review report sample?",
+			"expected_chunk_ids": []string{"review-sample-0"},
+			"answerability":      "answerable",
+			"answerable":         true,
+		}},
+		"citations": map[string]any{"citations": []any{}},
+	})
+	if err != nil {
+		t.Fatalf("encode review report draft: %v", err)
+	}
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.review-report", string(body))
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save review report draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	request := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.review-report/review-report", nil)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("review report status=%d body=%s", response.Code, response.Body.String())
+	}
+	var report struct {
+		ChunkCount           int            `json:"chunk_count"`
+		SampleCount          int            `json:"sample_count"`
+		MissingCitationCount int            `json:"missing_citation_count"`
+		DuplicateCount       int            `json:"duplicate_count"`
+		ContaminationCount   int            `json:"contamination_count"`
+		GoldenPromptCount    int            `json:"golden_prompt_count"`
+		SourceCounts         map[string]int `json:"source_counts"`
+		LicenseCounts        map[string]int `json:"license_counts"`
+		SampledChunks        []struct {
+			ChunkID string `json:"chunk_id"`
+		} `json:"sampled_chunks"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+		t.Fatalf("decode review report: %v", err)
+	}
+	if report.ChunkCount != 35 || report.SampleCount != 30 || len(report.SampledChunks) != 30 || report.SampledChunks[0].ChunkID != "review-sample-0" {
+		t.Fatalf("unexpected sample summary = %+v", report)
+	}
+	if report.MissingCitationCount != 1 || report.DuplicateCount != 1 || report.ContaminationCount != 0 || report.GoldenPromptCount != 1 || report.SourceCounts["yi-flow-core"] != 35 || report.LicenseCounts["reviewed internal knowledge"] != 34 {
+		t.Fatalf("unexpected review counts = %+v", report)
+	}
+}
+
 func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -2710,6 +2928,21 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 		"accepted_pages_required",
 		"faq_chunks_required",
 		"golden_questions_required",
+		"Batch review",
+		"Canonical draft JSON",
+		"验证批量导入",
+		"导入 draft JSON",
+		"导出 draft JSON",
+		"加载 review queue",
+		"生成 review report",
+		"/import",
+		"/export",
+		"/review-queue",
+		"/review-report",
+		"missing_citation_count",
+		"duplicate_count",
+		"contamination_count",
+		"golden_prompt_count",
 	} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("admin page missing chunk editor control %q", expected)

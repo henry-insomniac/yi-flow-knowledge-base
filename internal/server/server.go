@@ -74,6 +74,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleDraftSourceAudit(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/moegirl-review"):
 		h.handleMoegirlDraftReview(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/import"):
+		h.handleDraftBulkImport(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/export"):
+		h.handleDraftExport(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/review-queue"):
+		h.handleDraftReviewQueue(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/review-report"):
+		h.handleDraftReviewReport(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/quality-gates"):
 		h.handleDraftQualityGates(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/build-dry-run"):
@@ -344,6 +352,25 @@ const adminPageHTML = `<!doctype html>
     <button id="auditDraftSources" class="secondary" type="button">审计 source metadata</button>
     <p id="draftStatus" class="muted">Draft workspace status: not saved</p>
     <div id="draftChunks" class="chunk-list"></div>
+    <h3>Batch review</h3>
+    <label>Canonical draft JSON <textarea id="draftBulkJSON" spellcheck="false" placeholder='{"chunks":[],"prompts":[],"citations":{"citations":[]}}'></textarea></label>
+    <div class="grid">
+      <label>Review queue filter
+        <select id="draftReviewQueueFilter">
+          <option value="unreviewed">unreviewed</option>
+          <option value="missing_citation">missing_citation</option>
+          <option value="failed_gate">failed_gate</option>
+          <option value="changed_since_last_publish">changed_since_last_publish</option>
+          <option value="">all</option>
+        </select>
+      </label>
+    </div>
+    <button id="validateDraftBulkImport" class="secondary" type="button">验证批量导入</button>
+    <button id="importDraftBulkJSON" class="secondary" type="button">导入 draft JSON</button>
+    <button id="exportDraftBulkJSON" class="secondary" type="button">导出 draft JSON</button>
+    <button id="loadDraftReviewQueue" class="secondary" type="button">加载 review queue</button>
+    <button id="loadDraftReviewReport" class="secondary" type="button">生成 review report</button>
+    <div id="draftReviewMaterials" class="chunk-list"></div>
     <h3>Prompts / golden questions</h3>
     <div class="grid">
       <label>Prompt ID <input id="draftPromptID" placeholder="prompt-alpha"></label>
@@ -1005,6 +1032,21 @@ document.querySelector("#importMoegirlDraft").onclick = async () => {
 document.querySelector("#reviewMoegirlDraft").onclick = async () => {
   await reviewMoegirlDraft();
 };
+document.querySelector("#validateDraftBulkImport").onclick = async () => {
+  await runDraftBulkImport(true);
+};
+document.querySelector("#importDraftBulkJSON").onclick = async () => {
+  await runDraftBulkImport(false);
+};
+document.querySelector("#exportDraftBulkJSON").onclick = async () => {
+  await exportDraftBulkJSON();
+};
+document.querySelector("#loadDraftReviewQueue").onclick = async () => {
+  await loadDraftReviewQueue();
+};
+document.querySelector("#loadDraftReviewReport").onclick = async () => {
+  await loadDraftReviewReport();
+};
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {
     output.textContent = "请先查看知识包内容，再导入到构建器。";
@@ -1604,6 +1646,101 @@ function renderMoegirlDraftReport(report) {
   ].join(" · ");
   card.append(content);
   container.replaceChildren(card);
+}
+async function runDraftBulkImport(dryRun) {
+  let body;
+  try {
+    body = JSON.parse(document.querySelector("#draftBulkJSON").value || "{}");
+  } catch (error) {
+    output.textContent = "Draft JSON 解析失败：\n" + String(error);
+    return;
+  }
+  const path = "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/import" + (dryRun ? "?dry_run=1" : "");
+  const response = await fetch(servicePrefix + path, {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: bulk import failed";
+    return;
+  }
+  renderDraftReviewMaterials(JSON.parse(text), dryRun ? "Bulk import validation" : "Bulk import saved");
+  if (!dryRun) await loadDraftChunkList();
+  draftStatus.textContent = "Draft workspace status: " + (dryRun ? "bulk import validated" : "bulk import saved");
+}
+async function exportDraftBulkJSON() {
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/export", {
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: export failed";
+    return;
+  }
+  document.querySelector("#draftBulkJSON").value = pretty(JSON.parse(text));
+  draftStatus.textContent = "Draft workspace status: canonical draft exported";
+}
+async function loadDraftReviewQueue() {
+  const filter = document.querySelector("#draftReviewQueueFilter").value;
+  const params = new URLSearchParams();
+  if (filter) params.set("filter", filter);
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/review-queue?" + params.toString(), {
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: review queue failed";
+    return;
+  }
+  renderDraftReviewQueue(JSON.parse(text));
+  draftStatus.textContent = "Draft workspace status: review queue loaded";
+}
+async function loadDraftReviewReport() {
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/review-report", {
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: review report failed";
+    return;
+  }
+  renderDraftReviewMaterials(JSON.parse(text), "Review report");
+  draftStatus.textContent = "Draft workspace status: review report loaded";
+}
+function renderDraftReviewQueue(queue) {
+  const cards = (queue.items || []).map((item) => {
+    const card = renderDraftListChunk(item.chunk || {});
+    const meta = document.createElement("div");
+    meta.className = "chunk-meta";
+    meta.textContent = "review_reasons=" + (item.reasons || []).join(", ");
+    card.append(meta);
+    return card;
+  });
+  document.querySelector("#draftReviewMaterials").replaceChildren(...cards);
+}
+function renderDraftReviewMaterials(report, titleText) {
+  const card = document.createElement("article");
+  card.className = "chunk-card";
+  const title = document.createElement("h3");
+  title.textContent = titleText;
+  card.append(title);
+  const meta = document.createElement("div");
+  meta.className = "chunk-meta";
+  meta.textContent = [
+    report.kb_id,
+    report.version,
+    "chunk_count=" + String(report.chunk_count || 0),
+    "sample_count=" + String(report.sample_count || 0),
+    "missing_citation_count=" + String(report.missing_citation_count || 0),
+    "duplicate_count=" + String(report.duplicate_count || 0),
+    "contamination_count=" + String(report.contamination_count || 0),
+    "golden_prompt_count=" + String(report.golden_prompt_count || 0),
+    "quality_status=" + (report.quality_status || "")
+  ].filter(Boolean).join(" · ");
+  card.append(meta);
+  document.querySelector("#draftReviewMaterials").replaceChildren(card);
 }
 function renderDraftRetrievalResults(preview) {
   draftRetrievalResults.replaceChildren(...(preview.results || []).map(renderDraftRetrievalResult));
