@@ -3208,6 +3208,48 @@ func TestAdminPageFollowsProjectDesignSpec(t *testing.T) {
 	}
 }
 
+func TestAdminPageOrganizesDashboardCategoriesAndSimplifiesChunkCreation(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/admin/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("admin page status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	for _, expected := range []string{
+		`id="dashboardCategoryNav"`,
+		`href="#dashboard-create"`,
+		`href="#dashboard-review"`,
+		`href="#dashboard-ship"`,
+		`href="#dashboard-inspect"`,
+		`href="#dashboard-operate"`,
+		`data-dashboard-category="create"`,
+		`data-dashboard-category="review"`,
+		`data-dashboard-category="ship"`,
+		`data-dashboard-category="inspect"`,
+		`data-dashboard-category="operate"`,
+		"Create chunk",
+		"Basic chunk fields",
+		"Advanced metadata",
+		"Source import",
+		"normalizeDraftChunkForCreate",
+		"slugifyChunkValue",
+		"draftChunkPayloadForCreate",
+		"auto-filled chunk_id/path/source",
+	} {
+		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
+			t.Fatalf("admin page missing dashboard/simplified create marker %q", expected)
+		}
+	}
+}
+
 func TestHealthzReportsOK(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),

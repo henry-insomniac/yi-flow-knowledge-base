@@ -328,6 +328,55 @@ const adminPageHTML = `<!doctype html>
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; align-items: start; }
     .grid > *, .compare-grid > *, .chunk-list > * { min-width: 0; }
     .muted { color: var(--color-muted); }
+    .dashboard-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 24px;
+      padding: 8px;
+      border: 1px solid var(--color-hairline);
+      border-radius: var(--radius-full);
+      background: var(--color-canvas);
+    }
+    .dashboard-nav a {
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 18px;
+      border-radius: var(--radius-full);
+      color: var(--color-ink);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.29;
+    }
+    .dashboard-nav a:hover { background: var(--color-surface-soft); }
+    .dashboard-anchor { scroll-margin-top: 24px; margin-top: 32px; padding-top: 1px; }
+    .dashboard-category-label {
+      margin: 32px 0 8px;
+      color: var(--color-primary-active);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.23;
+      text-transform: uppercase;
+    }
+    .advanced-panel {
+      margin: 16px 0;
+      padding: 16px;
+      border: 1px solid var(--color-hairline);
+      border-radius: var(--radius-md);
+      background: var(--color-canvas);
+    }
+    .advanced-panel summary {
+      cursor: pointer;
+      color: var(--color-ink);
+      font-size: 16px;
+      font-weight: 600;
+      line-height: 1.25;
+    }
+    .advanced-panel[open] summary { margin-bottom: 12px; }
     .chunk-list { display: grid; gap: 16px; margin-top: 16px; }
     .chunk-card { border: 1px solid var(--color-hairline); border-radius: var(--radius-md); padding: 16px; background: var(--color-canvas); }
     .chunk-card:hover { box-shadow: var(--shadow-float); }
@@ -356,6 +405,8 @@ const adminPageHTML = `<!doctype html>
       h1 { font-size: 26px; }
       section { padding: 24px 0; margin-top: 24px; }
       .grid, .compare-grid { grid-template-columns: 1fr; }
+      .dashboard-nav { border-radius: var(--radius-lg); }
+      .dashboard-nav a { flex: 1 1 112px; }
       button { width: 100%; }
       .pager button { width: auto; flex: 1 1 120px; }
     }
@@ -365,8 +416,16 @@ const adminPageHTML = `<!doctype html>
 <main>
   <h1>Knowledge Pack Admin</h1>
   <p>发布、查看和回滚 yi-flow Knowledge Pack。Admin token 只保存在当前浏览器。</p>
+  <nav id="dashboardCategoryNav" class="dashboard-nav" aria-label="Knowledge pack dashboard categories">
+    <a href="#dashboard-config">Catalog</a>
+    <a href="#dashboard-create">Create</a>
+    <a href="#dashboard-review">Review</a>
+    <a href="#dashboard-ship">Ship</a>
+    <a href="#dashboard-inspect">Inspect</a>
+    <a href="#dashboard-operate">Operate</a>
+  </nav>
 
-  <section>
+  <section id="dashboard-config" data-dashboard-category="catalog">
     <h2>配置</h2>
     <div class="grid">
       <label>Admin token <input id="token" type="password" autocomplete="off"></label>
@@ -375,7 +434,7 @@ const adminPageHTML = `<!doctype html>
     <button id="saveToken" class="secondary">保存到本机浏览器</button>
   </section>
 
-  <section>
+  <section id="dashboard-create" data-dashboard-category="create">
     <h2>Chunk Studio</h2>
     <p class="muted">自研 chunk 内容创建和管理后台。后续 draft、chunk 编辑、citation、prompts、retrieval preview、quality gates、dry-run、publish 和 rollback 都在这里完成；外部 RAG/知识库项目只作为交互参考，不作为 chunk authoring 后台。</p>
     <div class="grid">
@@ -384,6 +443,47 @@ const adminPageHTML = `<!doctype html>
       <p class="muted"><strong>Quality gates</strong><br>发布前检查缺字段、重复、污染、citation 覆盖和 golden eval。</p>
       <p class="muted"><strong>Signed package</strong><br>继续生成 manifest.json、knowledge-pack.zip、chunks.sqlite、citations.json 和 prompts.json。</p>
     </div>
+    <h3>Create chunk</h3>
+    <p class="muted">Basic chunk fields：先填写草稿版本、标题和正文；系统会在创建时 auto-filled chunk_id/path/source，高级元数据仍可手动覆盖。</p>
+    <div class="grid">
+      <label>Draft version <input id="draftVersion" placeholder="2026.06.26.draft"></label>
+      <label>Title <input id="draftChunkTitle" placeholder="知识点标题"></label>
+    </div>
+    <label>Content <textarea id="draftChunkContent" spellcheck="false" placeholder="这里写 chunk 内容。保存后会进入草稿预览，但不会修改 latest。"></textarea></label>
+    <details class="advanced-panel">
+      <summary>Advanced metadata</summary>
+      <p class="muted">留空时创建流程会自动生成 chunk_id、path 和 source；需要迁移旧 chunk 或保持外部引用时再手动填写。</p>
+      <div class="grid">
+        <label>Chunk ID <input id="draftChunkID" placeholder="draft-topic-001"></label>
+        <label>Path <input id="draftChunkPath" placeholder="topic/category/name"></label>
+        <label>Source <input id="draftChunkSource" placeholder="manual"></label>
+        <label>Tags <input id="draftChunkTags" placeholder="core, faq, agent"></label>
+        <label>Review status
+          <select id="draftChunkReviewStatus">
+            <option value="draft">draft</option>
+            <option value="needs_review">needs_review</option>
+            <option value="approved">approved</option>
+            <option value="rejected">rejected</option>
+          </select>
+        </label>
+        <label>Citation URL <input id="draftCitationURL" placeholder="https://zh.moegirl.org.cn/..."></label>
+        <label>Citation title <input id="draftCitationTitle" placeholder="来源页面标题"></label>
+        <label>Source name <input id="draftSourceName" placeholder="萌娘百科 / yi-flow"></label>
+        <label>License <input id="draftLicense" placeholder="CC BY-NC-SA 3.0 CN"></label>
+        <label>Source policy <input id="draftSourcePolicy" placeholder="summary/FAQ only; no full article mirror"></label>
+        <label>Revision ID <input id="draftSourceRevisionID" placeholder="123456"></label>
+        <label>Page ID <input id="draftSourcePageID" placeholder="331116"></label>
+      </div>
+    </details>
+    <button id="saveDraft" type="button">保存草稿</button>
+    <button id="loadDraft" class="secondary" type="button">读取草稿</button>
+    <button id="previewDraft" class="secondary" type="button">预览草稿 chunk</button>
+    <button id="createDraftChunk" type="button">创建 chunk</button>
+    <button id="updateDraftChunk" class="secondary" type="button">更新 chunk</button>
+    <button id="duplicateDraftChunk" class="secondary" type="button">复制 chunk</button>
+    <button id="deleteDraftChunk" class="secondary" type="button">删除 chunk</button>
+    <h3>Source import</h3>
+    <p class="muted">用于把外部页面整理成 FAQ draft；导入后仍进入同一个 Review、Quality Gates 和 Publish 流程。</p>
     <h3>Moegirl FAQ import</h3>
     <div class="grid">
       <label>Moegirl draft version <input id="moegirlDraftVersion" placeholder="2026.06.26.moegirl-draft"></label>
@@ -393,37 +493,6 @@ const adminPageHTML = `<!doctype html>
     <button id="importMoegirlDraft" class="secondary" type="button">导入 Moegirl FAQ draft</button>
     <button id="reviewMoegirlDraft" class="secondary" type="button">检查 Moegirl draft</button>
     <div id="moegirlDraftImportReport" class="chunk-list"></div>
-    <div class="grid">
-      <label>Draft version <input id="draftVersion" placeholder="2026.06.26.draft"></label>
-      <label>Chunk ID <input id="draftChunkID" placeholder="draft-topic-001"></label>
-      <label>Title <input id="draftChunkTitle" placeholder="知识点标题"></label>
-      <label>Path <input id="draftChunkPath" placeholder="topic/category/name"></label>
-      <label>Source <input id="draftChunkSource" value="manual"></label>
-      <label>Tags <input id="draftChunkTags" placeholder="core, faq, agent"></label>
-      <label>Review status
-        <select id="draftChunkReviewStatus">
-          <option value="draft">draft</option>
-          <option value="needs_review">needs_review</option>
-          <option value="approved">approved</option>
-          <option value="rejected">rejected</option>
-        </select>
-      </label>
-      <label>Citation URL <input id="draftCitationURL" placeholder="https://zh.moegirl.org.cn/..."></label>
-      <label>Citation title <input id="draftCitationTitle" placeholder="来源页面标题"></label>
-      <label>Source name <input id="draftSourceName" placeholder="萌娘百科 / yi-flow"></label>
-      <label>License <input id="draftLicense" placeholder="CC BY-NC-SA 3.0 CN"></label>
-      <label>Source policy <input id="draftSourcePolicy" placeholder="summary/FAQ only; no full article mirror"></label>
-      <label>Revision ID <input id="draftSourceRevisionID" placeholder="123456"></label>
-      <label>Page ID <input id="draftSourcePageID" placeholder="331116"></label>
-    </div>
-    <label>Content <textarea id="draftChunkContent" spellcheck="false" placeholder="这里写 chunk 内容。保存后会进入草稿预览，但不会修改 latest。"></textarea></label>
-    <button id="saveDraft" type="button">保存草稿</button>
-    <button id="loadDraft" class="secondary" type="button">读取草稿</button>
-    <button id="previewDraft" class="secondary" type="button">预览草稿 chunk</button>
-    <button id="createDraftChunk" type="button">创建 chunk</button>
-    <button id="updateDraftChunk" class="secondary" type="button">更新 chunk</button>
-    <button id="duplicateDraftChunk" class="secondary" type="button">复制 chunk</button>
-    <button id="deleteDraftChunk" class="secondary" type="button">删除 chunk</button>
     <div class="grid">
       <label>Chunk search <input id="draftChunkSearch" placeholder="搜索 title/path/source/content/status"></label>
       <label>Review filter
@@ -446,6 +515,9 @@ const adminPageHTML = `<!doctype html>
     </div>
     <p id="draftStatus" class="muted">Draft workspace status: not saved</p>
     <div id="draftChunks" class="chunk-list"></div>
+    <div id="dashboard-review" class="dashboard-anchor" data-dashboard-category="review">
+      <p class="dashboard-category-label">Review</p>
+    </div>
     <h3>Batch review</h3>
     <label>Canonical draft JSON <textarea id="draftBulkJSON" spellcheck="false" placeholder='{"chunks":[],"prompts":[],"citations":{"citations":[]}}'></textarea></label>
     <div class="grid">
@@ -496,6 +568,9 @@ const adminPageHTML = `<!doctype html>
     <h3>Quality Gates</h3>
     <button id="runDraftQualityGates" class="secondary" type="button">运行 quality gates</button>
     <div id="draftQualityGateReport" class="chunk-list"></div>
+    <div id="dashboard-ship" class="dashboard-anchor" data-dashboard-category="ship">
+      <p class="dashboard-category-label">Ship</p>
+    </div>
     <h3>Dry-run Build</h3>
     <button id="runDraftBuildDryRun" class="secondary" type="button">运行 draft dry-run build</button>
     <button id="publishDraftLatest" type="button">发布 draft 为 latest</button>
@@ -530,7 +605,7 @@ const adminPageHTML = `<!doctype html>
     <button id="buildMoegirl" type="button"></button>
   </div>
 
-  <section>
+  <section data-dashboard-category="ship">
     <h2>手动上传版本</h2>
     <p class="muted">保留旧路径：仅当你已经离线生成 manifest.json 和 knowledge-pack.zip 时使用。</p>
     <label>Version <input id="version" placeholder="2026.06.20.001"></label>
@@ -539,13 +614,13 @@ const adminPageHTML = `<!doctype html>
     <button id="publish">发布并设为 latest</button>
   </section>
 
-  <section>
+  <section id="dashboard-operate" data-dashboard-category="operate">
     <h2>版本</h2>
     <button id="refresh" class="secondary">刷新版本列表</button>
     <pre id="versions"></pre>
   </section>
 
-  <section>
+  <section id="dashboard-inspect" data-dashboard-category="inspect">
     <h2>内容预览</h2>
     <p class="muted">查看已发布 Knowledge Pack 里的 chunks，并复制样例问题到 App 中验证检索和引用。</p>
     <div class="grid">
@@ -734,32 +809,24 @@ function fillDraftTemplate(force) {
   if (force || !document.querySelector("#draftVersion").value.trim()) {
     document.querySelector("#draftVersion").value = todayVersion() + "-draft";
   }
-  if (force || !document.querySelector("#draftChunkID").value.trim()) {
+  if (force) {
     document.querySelector("#draftChunkID").value = chunk.chunk_id;
-  }
-  if (force || !document.querySelector("#draftChunkTitle").value.trim()) {
     document.querySelector("#draftChunkTitle").value = chunk.title;
-  }
-  if (force || !document.querySelector("#draftChunkPath").value.trim()) {
     document.querySelector("#draftChunkPath").value = chunk.path;
-  }
-  if (force || !document.querySelector("#draftChunkSource").value.trim()) {
     document.querySelector("#draftChunkSource").value = chunk.source;
-  }
-  if (force || !document.querySelector("#draftChunkTags").value.trim()) {
     document.querySelector("#draftChunkTags").value = (chunk.tags || []).join(", ");
-  }
-  if (force || !document.querySelector("#draftChunkReviewStatus").value.trim()) {
     document.querySelector("#draftChunkReviewStatus").value = chunk.review_status || "draft";
-  }
-  if (force || !document.querySelector("#draftLicense").value.trim()) {
     document.querySelector("#draftLicense").value = chunk.license || "";
-  }
-  if (force || !document.querySelector("#draftSourcePolicy").value.trim()) {
     document.querySelector("#draftSourcePolicy").value = chunk.source_policy || "";
-  }
-  if (force || !document.querySelector("#draftChunkContent").value.trim()) {
     document.querySelector("#draftChunkContent").value = chunk.content;
+    return;
+  }
+  document.querySelector("#draftChunkReviewStatus").value = "draft";
+  if (!document.querySelector("#draftChunkTitle").value.trim()) {
+    document.querySelector("#draftChunkTitle").value = "";
+  }
+  if (!document.querySelector("#draftChunkContent").value.trim()) {
+    document.querySelector("#draftChunkContent").value = "";
   }
 }
 function draftVersion() {
@@ -783,10 +850,57 @@ function draftChunkPayloadFromForm() {
     source_page_id: document.querySelector("#draftSourcePageID").value.trim()
   };
 }
+function slugifyChunkValue(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized.slice(0, 72);
+}
+function normalizeDraftChunkForCreate(payload) {
+  if (!payload.title || !payload.content) {
+    output.textContent = "Create chunk needs title and content.";
+    preserveUnsavedDraftOnError("Draft workspace status: create needs title/content");
+    return null;
+  }
+  const baseID = slugifyChunkValue(payload.title) || "chunk-" + String(Date.now());
+  let changed = false;
+  if (!payload.chunk_id) {
+    payload.chunk_id = baseID;
+    document.querySelector("#draftChunkID").value = payload.chunk_id;
+    changed = true;
+  }
+  if (!payload.path) {
+    payload.path = "manual/" + payload.chunk_id;
+    document.querySelector("#draftChunkPath").value = payload.path;
+    changed = true;
+  }
+  if (!payload.source) {
+    payload.source = "manual";
+    document.querySelector("#draftChunkSource").value = payload.source;
+    changed = true;
+  }
+  if (!payload.review_status) {
+    payload.review_status = "draft";
+    document.querySelector("#draftChunkReviewStatus").value = payload.review_status;
+    changed = true;
+  }
+  if (changed) output.textContent = "auto-filled chunk_id/path/source";
+  return payload;
+}
+function draftChunkPayloadForCreate() {
+  return normalizeDraftChunkForCreate(draftChunkPayloadFromForm());
+}
 function draftPayloadFromForm() {
+  const chunk = draftChunkPayloadForCreate();
+  if (!chunk) return null;
+  const prompt = draftPromptPayloadFromForm();
   return {
-    chunks: [draftChunkPayloadFromForm()],
-    prompts: draftPromptPayloadFromForm().id ? [draftPromptPayloadFromForm()] : [],
+    chunks: [chunk],
+    prompts: prompt.id ? [prompt] : [],
     citations: defaultCitations
   };
 }
@@ -873,6 +987,7 @@ document.querySelector("#saveDraft").onclick = async () => {
     const version = draftVersion();
     document.querySelector("#draftVersion").value = version;
     const payload = draftPayloadFromForm();
+    if (!payload) return;
     const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(version), {
       method: "PUT",
       headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
@@ -932,7 +1047,8 @@ document.querySelector("#previewDraft").onclick = async () => {
 };
 document.querySelector("#createDraftChunk").onclick = async () => {
   try {
-    const payload = draftChunkPayloadFromForm();
+    const payload = draftChunkPayloadForCreate();
+    if (!payload) return;
     const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/chunks", {
       method: "POST",
       headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
