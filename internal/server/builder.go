@@ -118,9 +118,17 @@ func (h *Handler) handleBuildAndPublishVersion(w http.ResponseWriter, r *http.Re
 		http.Error(w, "invalid version", http.StatusBadRequest)
 		return
 	}
+	if err := validateBuildPublishBoundary(kbID, payload); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	packageBytes, manifest, err := buildKnowledgePack(kbID, version, payload, h.knowledgePackSigningSeed)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := auditKnowledgePackBeforePublish(manifest, packageBytes); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

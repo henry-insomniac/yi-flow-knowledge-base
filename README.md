@@ -33,6 +33,8 @@ Authorization: Bearer <ADMIN_TOKEN>
 
 管理页还内置“萌娘百科摘要知识包”构建器。该入口从萌娘百科公开 sitemap/API 读取主条目标题和 `exintro` 摘要，生成摘要型 chunks 与 `citations.json` 引用；它不会保存完整条目、不会复刻 infobox 数据集、不会下载图片，也不用于 AI 训练。生成内容必须按 `CC BY-NC-SA 3.0 CN` 署名并保留原页面 URL。
 
+Moegirl 派生包的抓取、署名、隔离和审计规则见 `docs/moegirl-source-policy.md`。
+
 服务端需要配置签名私钥，二选一：
 
 ```bash
@@ -71,7 +73,7 @@ curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/yi-flow-core/build
 从指定条目构建萌娘百科摘要包：
 
 ```bash
-curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/moegirl-acgn-summary/moegirl/build-publish" \
+curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/moegirl-acgn-faq/moegirl/build-publish" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -84,7 +86,7 @@ curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/moegirl-acgn-summa
 从萌娘百科 sitemap 自动取前 N 个主条目构建摘要包：
 
 ```bash
-curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/moegirl-acgn-summary/moegirl/build-publish" \
+curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/moegirl-acgn-faq/moegirl/build-publish" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -136,6 +138,7 @@ Run verification:
 
 ```bash
 scripts/verify-knowledge-base-server.sh
+scripts/verify-moegirl-golden-eval.sh
 docker build -t yi-flow-knowledge-base:local .
 ```
 

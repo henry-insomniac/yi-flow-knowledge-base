@@ -7,5 +7,7 @@ cd "$ROOT_DIR"
 go test ./...
 go build -o /tmp/yi-flow-knowledge-base-verify ./cmd/server
 scripts/verify-yi-flow-core-coverage.sh
+scripts/verify-moegirl-golden-eval.sh
+scripts/prepare-moegirl-hitl-review.sh
 
 echo "knowledge_base_server_ok"

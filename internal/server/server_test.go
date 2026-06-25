@@ -43,18 +43,18 @@ func TestAdminCanBuildAndPublishKnowledgePackFromPagePayload(t *testing.T) {
 	  "version": "2026.06.22.001",
 	  "chunks": [
 	    {
-	      "chunk_id": "anime-builder-001",
-	      "title": "二次元角色人设要素",
-	      "path": "anime/character/design",
-	      "source": "yi-flow-anime",
-	      "content": "二次元角色人设通常包含姓名、身份、外观关键词、服装轮廓、标志物、性格反差、目标和弱点。"
+	      "chunk_id": "yi-flow-core-builder-001",
+	      "title": "yi-flow 知识包构建流程",
+	      "path": "yi-flow/core/builder",
+	      "source": "yi-flow-core",
+	      "content": "yi-flow 知识包通过 chunks、prompts、citations 生成 chunks.sqlite、vector.index、knowledge-pack.zip 和 manifest.json。"
 	    }
 	  ],
 	  "prompts": [
 	    {
-	      "id": "anime-character-check",
-	      "title": "验证二次元人设",
-	      "question": "二次元角色人设要素有哪些？"
+	      "id": "yi-flow-core-builder-check",
+	      "title": "验证知识包构建流程",
+	      "question": "yi-flow 知识包构建会生成哪些文件？"
 	    }
 	  ]
 	}`)
@@ -137,8 +137,63 @@ func TestAdminCanBuildAndPublishKnowledgePackFromPagePayload(t *testing.T) {
 	if previewResponse.Code != http.StatusOK {
 		t.Fatalf("preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
 	}
-	if !bytes.Contains(previewResponse.Body.Bytes(), []byte("二次元角色人设要素")) {
+	if !bytes.Contains(previewResponse.Body.Bytes(), []byte("yi-flow 知识包构建流程")) {
 		t.Fatalf("preview missing generated chunk: %s", previewResponse.Body.String())
+	}
+}
+
+func TestAdminRejectsExternalACGNSourcesForYiFlowCoreBuildPublish(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	requestBody := bytes.NewBufferString(`{
+	  "version": "2026.06.22.002",
+	  "chunks": [
+	    {
+	      "chunk_id": "moegirl-page-1399",
+	      "title": "初音未来",
+	      "path": "moegirl/summary/初音未来",
+	      "source": "萌娘百科 (Moegirlpedia)",
+	      "content": "SHOULD_NOT_LEAK_FULL_CONTENT"
+	    }
+	  ],
+	  "citations": {
+	    "citations": [
+	      {
+	        "chunk_id": "moegirl-page-1399",
+	        "source": "萌娘百科 (Moegirlpedia)",
+	        "url": "https://zh.moegirl.org.cn/初音未来"
+	      }
+	    ]
+	  }
+	}`)
+	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/build-publish", requestBody)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("external source publish status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{"yi-flow-core", "moegirl"} {
+		if !strings.Contains(strings.ToLower(response.Body.String()), expected) {
+			t.Fatalf("rejection should mention %q: %s", expected, response.Body.String())
+		}
+	}
+	if strings.Contains(response.Body.String(), "SHOULD_NOT_LEAK_FULL_CONTENT") {
+		t.Fatalf("rejection leaked chunk content: %s", response.Body.String())
 	}
 }
 
@@ -152,7 +207,7 @@ func TestAdminCanPublishVersionAndClientsFetchLatestManifestAndPackage(t *testin
 	}
 
 	manifest := validManifest("2026.06.20.001")
-	packageBytes := []byte("signed package bytes")
+	packageBytes := validKnowledgePackZip(t, "uploaded-core-001")
 
 	publishResponse := publishVersion(t, handler, "yi-flow-core", "2026.06.20.001", manifest, packageBytes)
 	if publishResponse.Code != http.StatusCreated {
@@ -186,6 +241,40 @@ func TestAdminCanPublishVersionAndClientsFetchLatestManifestAndPackage(t *testin
 	}
 }
 
+func TestAdminRejectsUploadedYiFlowCorePackageWithExternalSources(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	version := "2026.06.20.polluted"
+	packageBytes := knowledgePackZip(t, []testChunk{
+		{
+			ChunkID: "moegirl-page-1399",
+			Title:   "初音未来",
+			Path:    "moegirl/summary/初音未来",
+			Source:  "萌娘百科 (Moegirlpedia)",
+			Content: "污染包不应被设为 latest。",
+		},
+	})
+	publishResponse := publishVersion(t, handler, "yi-flow-core", version, validManifest(version), packageBytes)
+	if publishResponse.Code != http.StatusBadRequest {
+		t.Fatalf("polluted upload status=%d body=%s", publishResponse.Code, publishResponse.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(publishResponse.Body.String()), "policy violation") {
+		t.Fatalf("polluted upload error should mention policy violation: %s", publishResponse.Body.String())
+	}
+
+	manifestResponse := httptest.NewRecorder()
+	handler.ServeHTTP(manifestResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/latest/manifest.json", nil))
+	if manifestResponse.Code != http.StatusNotFound {
+		t.Fatalf("polluted upload should not set latest status=%d body=%s", manifestResponse.Code, manifestResponse.Body.String())
+	}
+}
+
 func TestClientsCanListVersionsAndLatestVersion(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -195,8 +284,8 @@ func TestClientsCanListVersionsAndLatestVersion(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	publishVersion(t, handler, "yi-flow-core", "2026.06.20.001", validManifest("2026.06.20.001"), []byte("v1"))
-	publishVersion(t, handler, "yi-flow-core", "2026.06.20.002", validManifest("2026.06.20.002"), []byte("v2"))
+	publishVersion(t, handler, "yi-flow-core", "2026.06.20.001", validManifest("2026.06.20.001"), validKnowledgePackZip(t, "version-list-001"))
+	publishVersion(t, handler, "yi-flow-core", "2026.06.20.002", validManifest("2026.06.20.002"), validKnowledgePackZip(t, "version-list-002"))
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("GET", "/kb/yi-flow-core/versions", nil))
@@ -528,8 +617,8 @@ func TestAdminCanRollbackLatestToExistingVersion(t *testing.T) {
 		t.Fatalf("new handler: %v", err)
 	}
 
-	publishVersion(t, handler, "yi-flow-core", "2026.06.20.001", validManifest("2026.06.20.001"), []byte("v1"))
-	publishVersion(t, handler, "yi-flow-core", "2026.06.20.002", validManifest("2026.06.20.002"), []byte("v2"))
+	publishVersion(t, handler, "yi-flow-core", "2026.06.20.001", validManifest("2026.06.20.001"), validKnowledgePackZip(t, "rollback-001"))
+	publishVersion(t, handler, "yi-flow-core", "2026.06.20.002", validManifest("2026.06.20.002"), validKnowledgePackZip(t, "rollback-002"))
 
 	rollback := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/latest", bytes.NewBufferString(`{"version":"2026.06.20.001"}`))
 	rollback.Header.Set("Authorization", "Bearer test-admin-token")
@@ -632,6 +721,9 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("/moegirl/build-publish")) {
 		t.Fatalf("admin page missing Moegirl build publish api usage")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("moegirl-acgn-faq")) {
+		t.Fatalf("admin page missing Moegirl FAQ default kb id")
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("CC BY-NC-SA 3.0 CN")) {
 		t.Fatalf("admin page missing Moegirl license notice")
@@ -758,6 +850,20 @@ type testChunk struct {
 	Path    string
 	Source  string
 	Content string
+}
+
+func validKnowledgePackZip(t *testing.T, chunkID string) []byte {
+	t.Helper()
+
+	return knowledgePackZip(t, []testChunk{
+		{
+			ChunkID: chunkID,
+			Title:   "yi-flow 测试知识",
+			Path:    "yi-flow/test/" + chunkID,
+			Source:  "yi-flow-core",
+			Content: "这是用于测试上传、列表和回滚流程的 yi-flow 内部知识包内容。",
+		},
+	})
 }
 
 func knowledgePackZip(t *testing.T, chunks []testChunk) []byte {

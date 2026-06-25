@@ -227,9 +227,14 @@ fi
 manifest_json="$BUILD_DIR/latest-manifest.json"
 preview_json="$BUILD_DIR/latest-preview.json"
 package_zip="$BUILD_DIR/knowledge-pack.zip"
+audit_json="$BUILD_DIR/knowledge-pack-audit.json"
 curl -fsS "$BASE_URL/kb/yi-flow-core/latest/manifest.json" -o "$manifest_json"
 curl -fsS "$BASE_URL/kb/yi-flow-core/latest/preview?limit=50" -o "$preview_json"
 curl -fsS "$BASE_URL/kb/yi-flow-core/versions/$VERSION/knowledge-pack.zip" -o "$package_zip"
+if ! go run ./cmd/knowledge-pack-audit -manifest "$manifest_json" -package "$package_zip" > "$audit_json"; then
+  echo "yi_flow_core_coverage_failed contamination_audit_failed report=$(tr '\n' ' ' < "$audit_json" | cut -c 1-360)" >&2
+  exit 1
+fi
 
 python3 - "$VERSION" "$manifest_json" "$preview_json" "$package_zip" <<'PY'
 import json

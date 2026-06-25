@@ -38,6 +38,10 @@ type knowledgePackPreviewChunk struct {
 	Title              string   `json:"title"`
 	Path               string   `json:"path"`
 	Source             string   `json:"source"`
+	FAQType            string   `json:"faq_type,omitempty"`
+	SourceURL          string   `json:"source_url,omitempty"`
+	License            string   `json:"license,omitempty"`
+	RevisionID         string   `json:"revision_id,omitempty"`
 	Content            string   `json:"content"`
 	SuggestedQuestions []string `json:"suggested_questions"`
 }
@@ -52,6 +56,9 @@ type previewManifest struct {
 		Chunks []struct {
 			Path string `json:"path"`
 		} `json:"chunks"`
+		Citations []struct {
+			Path string `json:"path"`
+		} `json:"citations"`
 		FTS []struct {
 			Path string `json:"path"`
 		} `json:"fts"`
@@ -168,6 +175,7 @@ func (h *Handler) previewKnowledgePack(kbID string, version string, latest bool,
 	if err != nil {
 		return knowledgePackPreview{}, err
 	}
+	enrichPreviewChunksFromCitations(chunks, archive.File, manifest)
 	preview.Chunks = chunks
 	if len(chunks) == 0 {
 		preview.Warnings = append(preview.Warnings, "chunks 表存在，但没有可预览内容")
@@ -235,6 +243,78 @@ func previewChunkPathCandidates(manifest previewManifest) []string {
 	}
 	candidates = append(candidates, "chunks.sqlite", "fts.sqlite")
 	return candidates
+}
+
+func previewCitationPathCandidates(manifest previewManifest) []string {
+	candidates := []string{}
+	for _, file := range manifest.Files.Citations {
+		candidates = append(candidates, file.Path)
+	}
+	candidates = append(candidates, "citations.json")
+	return candidates
+}
+
+func enrichPreviewChunksFromCitations(chunks []knowledgePackPreviewChunk, files []*zip.File, manifest previewManifest) {
+	citationsFile := findPreviewCitationFile(files, manifest)
+	if citationsFile == nil {
+		return
+	}
+	citations, err := previewCitationsByChunkID(citationsFile)
+	if err != nil {
+		return
+	}
+	for index := range chunks {
+		citation, ok := citations[chunks[index].ChunkID]
+		if !ok {
+			continue
+		}
+		chunks[index].FAQType = citation.FAQType
+		chunks[index].SourceURL = citation.URL
+		chunks[index].License = citation.License
+		chunks[index].RevisionID = citation.RevisionID
+	}
+}
+
+func findPreviewCitationFile(files []*zip.File, manifest previewManifest) *zip.File {
+	for _, candidate := range previewCitationPathCandidates(manifest) {
+		if file := findZipFile(files, candidate); file != nil {
+			return file
+		}
+	}
+	return nil
+}
+
+type previewCitationFile struct {
+	Citations []previewCitation `json:"citations"`
+}
+
+type previewCitation struct {
+	ChunkID    string `json:"chunk_id"`
+	FAQType    string `json:"faq_type"`
+	URL        string `json:"url"`
+	License    string `json:"license"`
+	RevisionID string `json:"revision_id"`
+}
+
+func previewCitationsByChunkID(file *zip.File) (map[string]previewCitation, error) {
+	reader, err := file.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	var decoded previewCitationFile
+	if err := json.NewDecoder(io.LimitReader(reader, 4<<20)).Decode(&decoded); err != nil {
+		return nil, err
+	}
+	result := map[string]previewCitation{}
+	for _, citation := range decoded.Citations {
+		citation.ChunkID = strings.TrimSpace(citation.ChunkID)
+		if citation.ChunkID == "" {
+			continue
+		}
+		result[citation.ChunkID] = citation
+	}
+	return result, nil
 }
 
 func findZipFile(files []*zip.File, candidate string) *zip.File {

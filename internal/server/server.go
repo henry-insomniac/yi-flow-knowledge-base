@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -166,8 +167,17 @@ func (h *Handler) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer packageFile.Close()
+	packageBytes, err := io.ReadAll(io.LimitReader(packageFile, 512<<20))
+	if err != nil {
+		http.Error(w, "read package failed", http.StatusBadRequest)
+		return
+	}
+	if err := auditKnowledgePackBeforePublish(manifest, packageBytes); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
-	if err := h.storePublishedVersion(kbID, version, manifest, packageFile); err != nil {
+	if err := h.storePublishedVersion(kbID, version, manifest, bytes.NewReader(packageBytes)); err != nil {
 		writePublishError(w, err)
 		return
 	}
@@ -244,7 +254,7 @@ const adminPageHTML = `<!doctype html>
 
   <section>
     <h2>萌娘百科摘要知识包</h2>
-    <p class="muted">从萌娘百科公开 sitemap/API 构建摘要型 Knowledge Pack。仅保存高层摘要、分类和来源引用；遵守 CC BY-NC-SA 3.0 CN，不复现完整条目，不用于 AI 训练。</p>
+    <p class="muted">从萌娘百科公开 sitemap/API 构建 FAQ 型 Knowledge Pack。默认发布到 moegirl-acgn-faq；仅保存高层摘要、分类和来源引用；遵守 CC BY-NC-SA 3.0 CN，不复现完整条目，不用于 AI 训练。</p>
     <div class="grid">
       <label>Version <input id="moegirlVersion" placeholder="2026.06.22.101"></label>
       <label>Sitemap page limit <input id="moegirlLimit" type="number" min="1" max="3000" value="50"></label>
@@ -394,6 +404,10 @@ document.querySelector("#saveToken").onclick = () => {
 };
 function token() { return tokenInput.value || localStorage.getItem("yiFlowKnowledgeAdminToken") || ""; }
 function kbID() { return kbIDInput.value.trim() || "yi-flow-core"; }
+function moegirlKBID() {
+  const current = kbID();
+  return current.startsWith("moegirl-") ? current : "moegirl-acgn-faq";
+}
 function pretty(value) { return JSON.stringify(value, null, 2); }
 function fillBuilderTemplate(force) {
   if (force || !document.querySelector("#builderChunks").value.trim()) {
@@ -526,7 +540,7 @@ document.querySelector("#buildMoegirl").onclick = async () => {
       limit: Math.max(1, Math.min(3000, Number(document.querySelector("#moegirlLimit").value || 50))),
       llm_recommended: document.querySelector("#builderLLM").value.split(",").map((item) => item.trim()).filter(Boolean)
     };
-    const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/moegirl/build-publish", {
+    const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(moegirlKBID()) + "/moegirl/build-publish", {
       method: "POST",
       headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
       body: JSON.stringify(body)
