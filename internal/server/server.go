@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Options struct {
@@ -75,6 +76,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleDraftQualityGates(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/build-dry-run"):
 		h.handleDraftBuildDryRun(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/publish"):
+		h.handleDraftPublish(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/retrieval-preview"):
 		h.handleDraftRetrievalPreview(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.Contains(r.URL.Path, "/prompts/") && strings.HasSuffix(r.URL.Path, "/preview"):
@@ -361,6 +364,7 @@ const adminPageHTML = `<!doctype html>
     <div id="draftQualityGateReport" class="chunk-list"></div>
     <h3>Dry-run Build</h3>
     <button id="runDraftBuildDryRun" class="secondary" type="button">运行 draft dry-run build</button>
+    <button id="publishDraftLatest" type="button">发布 draft 为 latest</button>
     <div id="draftDryRunBuildReport" class="chunk-list"></div>
     <p id="weknoraStatus" class="muted">Chunk Studio status: direction locked; draft editor is tracked in #42/#43.</p>
     <div class="grid">
@@ -979,6 +983,9 @@ document.querySelector("#runDraftQualityGates").onclick = async () => {
 document.querySelector("#runDraftBuildDryRun").onclick = async () => {
   await runDraftBuildDryRun();
 };
+document.querySelector("#publishDraftLatest").onclick = async () => {
+  await publishDraftLatest();
+};
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {
     output.textContent = "请先查看知识包内容，再导入到构建器。";
@@ -1488,6 +1495,23 @@ function renderDraftDryRunBuildReport(result) {
 
   container.replaceChildren(summary, files, manifest);
 }
+async function publishDraftLatest() {
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/publish", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: publish failed";
+    return;
+  }
+  const decoded = JSON.parse(text);
+  lastWeKnoraExportVersion.textContent = decoded.version || "-";
+  lastWeKnoraQualityGate.textContent = decoded.gate_status || "unknown";
+  document.querySelector("#previewVersion").value = decoded.version || "";
+  document.querySelector("#rollbackVersion").value = decoded.version || "";
+  draftStatus.textContent = "Draft workspace status: published latest · " + decoded.version + " · " + (decoded.content_hash || "");
+}
 function renderDraftRetrievalResults(preview) {
   draftRetrievalResults.replaceChildren(...(preview.results || []).map(renderDraftRetrievalResult));
   if ((preview.results || []).length === 0) {
@@ -1674,11 +1698,26 @@ func (h *Handler) handleSetLatest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "write latest version failed", http.StatusInternalServerError)
 		return
 	}
+	rollbackAt := time.Now().UTC().Format(time.RFC3339Nano)
+	contentHash := h.publishedVersionContentHash(kbID, version)
+	if err := h.appendAuditLog(kbID, map[string]any{
+		"event":        "rollback_latest",
+		"version":      version,
+		"content_hash": contentHash,
+		"gate_status":  "not_applicable",
+		"rollback_at":  rollbackAt,
+		"actor":        "admin",
+	}); err != nil {
+		http.Error(w, "write audit log failed", http.StatusInternalServerError)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"kb_id":   kbID,
-		"version": version,
-		"latest":  true,
+		"kb_id":        kbID,
+		"version":      version,
+		"latest":       true,
+		"content_hash": contentHash,
+		"rollback_at":  rollbackAt,
 	})
 }
 

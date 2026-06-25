@@ -14,6 +14,7 @@ scripts/verify-chunk-studio-prompts.sh
 scripts/verify-chunk-studio-draft-retrieval.sh
 scripts/verify-chunk-studio-quality-gates.sh
 scripts/verify-chunk-studio-dry-run-build.sh
+scripts/verify-chunk-studio-publish-rollback.sh
 scripts/verify-weknora-lightweight-replacement.sh
 scripts/verify-weknora-dataset-contract.sh
 scripts/verify-weknora-pilot-migration.sh

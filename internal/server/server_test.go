@@ -963,6 +963,13 @@ func TestAdminWriteEndpointsRequireBearerToken(t *testing.T) {
 		t.Fatalf("unauthenticated build publish status=%d body=%s", buildPublishResponse.Code, buildPublishResponse.Body.String())
 	}
 
+	draftPublish := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.20.001/publish", nil)
+	draftPublishResponse := httptest.NewRecorder()
+	handler.ServeHTTP(draftPublishResponse, draftPublish)
+	if draftPublishResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated draft publish status=%d body=%s", draftPublishResponse.Code, draftPublishResponse.Body.String())
+	}
+
 	draftSave := httptest.NewRequest("PUT", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.draft", bytes.NewBufferString(`{"chunks":[]}`))
 	draftSave.Header.Set("Content-Type", "application/json")
 	draftSaveResponse := httptest.NewRecorder()
@@ -2469,6 +2476,142 @@ func TestAdminDraftDryRunBuildRequiresPassingQualityGates(t *testing.T) {
 	}
 }
 
+func TestAdminDraftPublishRequiresSuccessfulDryRunForSameContentHash(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	savePublishableDraft(t, handler, "yi-flow-core", "2026.06.26.publish-guard", "publish guard original")
+	publishWithoutDryRun := publishDraftFromStudio(t, handler, "yi-flow-core", "2026.06.26.publish-guard")
+	if publishWithoutDryRun.Code != http.StatusConflict {
+		t.Fatalf("publish without dry-run status=%d body=%s", publishWithoutDryRun.Code, publishWithoutDryRun.Body.String())
+	}
+
+	dryRun := dryRunDraftBuild(t, handler, "yi-flow-core", "2026.06.26.publish-guard")
+	if dryRun.Code != http.StatusOK {
+		t.Fatalf("dry-run status=%d body=%s", dryRun.Code, dryRun.Body.String())
+	}
+	savePublishableDraft(t, handler, "yi-flow-core", "2026.06.26.publish-guard", "publish guard changed")
+	publishChangedDraft := publishDraftFromStudio(t, handler, "yi-flow-core", "2026.06.26.publish-guard")
+	if publishChangedDraft.Code != http.StatusConflict {
+		t.Fatalf("publish changed draft status=%d body=%s", publishChangedDraft.Code, publishChangedDraft.Body.String())
+	}
+	if !strings.Contains(publishChangedDraft.Body.String(), "dry-run content hash mismatch") {
+		t.Fatalf("changed draft publish should mention hash mismatch: %s", publishChangedDraft.Body.String())
+	}
+}
+
+func TestAdminDraftPublishLatestRollbackAndAuditLog(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	storageDir := t.TempDir()
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               storageDir,
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	savePublishableDraft(t, handler, "yi-flow-core", "2026.06.26.publish.001", "publish marker one")
+	if response := dryRunDraftBuild(t, handler, "yi-flow-core", "2026.06.26.publish.001"); response.Code != http.StatusOK {
+		t.Fatalf("dry-run v1 status=%d body=%s", response.Code, response.Body.String())
+	}
+	publishV1 := publishDraftFromStudio(t, handler, "yi-flow-core", "2026.06.26.publish.001")
+	if publishV1.Code != http.StatusCreated {
+		t.Fatalf("publish v1 status=%d body=%s", publishV1.Code, publishV1.Body.String())
+	}
+
+	savePublishableDraft(t, handler, "yi-flow-core", "2026.06.26.publish.002", "publish marker two")
+	if response := dryRunDraftBuild(t, handler, "yi-flow-core", "2026.06.26.publish.002"); response.Code != http.StatusOK {
+		t.Fatalf("dry-run v2 status=%d body=%s", response.Code, response.Body.String())
+	}
+	publishV2 := publishDraftFromStudio(t, handler, "yi-flow-core", "2026.06.26.publish.002")
+	if publishV2.Code != http.StatusCreated {
+		t.Fatalf("publish v2 status=%d body=%s", publishV2.Code, publishV2.Body.String())
+	}
+	var published struct {
+		KBID        string `json:"kb_id"`
+		Version     string `json:"version"`
+		Latest      bool   `json:"latest"`
+		ContentHash string `json:"content_hash"`
+		GateStatus  string `json:"gate_status"`
+	}
+	if err := json.Unmarshal(publishV2.Body.Bytes(), &published); err != nil {
+		t.Fatalf("decode publish v2: %v", err)
+	}
+	if published.KBID != "yi-flow-core" || published.Version != "2026.06.26.publish.002" || !published.Latest || !strings.HasPrefix(published.ContentHash, "sha256:") || published.GateStatus != "passed" {
+		t.Fatalf("unexpected publish response = %+v", published)
+	}
+
+	versionsResponse := httptest.NewRecorder()
+	handler.ServeHTTP(versionsResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/versions", nil))
+	if versionsResponse.Code != http.StatusOK {
+		t.Fatalf("versions status=%d body=%s", versionsResponse.Code, versionsResponse.Body.String())
+	}
+	if !strings.Contains(versionsResponse.Body.String(), "2026.06.26.publish.001") || !strings.Contains(versionsResponse.Body.String(), "2026.06.26.publish.002") {
+		t.Fatalf("versions list missing published versions: %s", versionsResponse.Body.String())
+	}
+
+	latestPreview := httptest.NewRecorder()
+	handler.ServeHTTP(latestPreview, httptest.NewRequest("GET", "/kb/yi-flow-core/latest/preview?limit=3", nil))
+	if latestPreview.Code != http.StatusOK || !strings.Contains(latestPreview.Body.String(), "publish marker two") {
+		t.Fatalf("latest preview status=%d body=%s", latestPreview.Code, latestPreview.Body.String())
+	}
+	versionedPreview := httptest.NewRecorder()
+	handler.ServeHTTP(versionedPreview, httptest.NewRequest("GET", "/kb/yi-flow-core/versions/2026.06.26.publish.001/preview?limit=3", nil))
+	if versionedPreview.Code != http.StatusOK || !strings.Contains(versionedPreview.Body.String(), "publish marker one") {
+		t.Fatalf("versioned preview status=%d body=%s", versionedPreview.Code, versionedPreview.Body.String())
+	}
+	packageResponse := httptest.NewRecorder()
+	handler.ServeHTTP(packageResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/versions/2026.06.26.publish.002/knowledge-pack.zip", nil))
+	if packageResponse.Code != http.StatusOK || packageResponse.Body.Len() == 0 {
+		t.Fatalf("package status=%d body_len=%d", packageResponse.Code, packageResponse.Body.Len())
+	}
+
+	rollback := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/latest", bytes.NewBufferString(`{"version":"2026.06.26.publish.001"}`))
+	rollback.Header.Set("Authorization", "Bearer test-admin-token")
+	rollback.Header.Set("Content-Type", "application/json")
+	rollbackResponse := httptest.NewRecorder()
+	handler.ServeHTTP(rollbackResponse, rollback)
+	if rollbackResponse.Code != http.StatusOK {
+		t.Fatalf("rollback status=%d body=%s", rollbackResponse.Code, rollbackResponse.Body.String())
+	}
+	latestManifest := httptest.NewRecorder()
+	handler.ServeHTTP(latestManifest, httptest.NewRequest("GET", "/kb/yi-flow-core/latest/manifest.json", nil))
+	if latestManifest.Code != http.StatusOK || !strings.Contains(latestManifest.Body.String(), "2026.06.26.publish.001") {
+		t.Fatalf("latest manifest after rollback status=%d body=%s", latestManifest.Code, latestManifest.Body.String())
+	}
+
+	auditLog, err := os.ReadFile(filepath.Join(storageDir, "kb", "yi-flow-core", "audit.log"))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	auditText := string(auditLog)
+	for _, expected := range []string{"draft_publish", "rollback_latest", "2026.06.26.publish.001", "2026.06.26.publish.002", "sha256:", "gate_status", "published_at", "rollback_at"} {
+		if !strings.Contains(auditText, expected) {
+			t.Fatalf("audit log missing %q: %s", expected, auditText)
+		}
+	}
+	if strings.Contains(auditText, "test-admin-token") {
+		t.Fatalf("audit log leaked token: %s", auditText)
+	}
+}
+
 func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -2544,6 +2687,11 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 		"Generated files",
 		"Manifest preview",
 		"preview_url",
+		"发布 draft 为 latest",
+		"publishDraftLatest",
+		"/publish",
+		"content_hash",
+		"gate_status",
 	} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("admin page missing chunk editor control %q", expected)
@@ -2718,6 +2866,67 @@ func qualityGateFailureContains(checks []struct {
 		}
 	}
 	return false
+}
+
+func savePublishableDraft(t *testing.T, handler http.Handler, kbID string, version string, marker string) {
+	t.Helper()
+	chunkID := "publishable-" + strings.ReplaceAll(version, ".", "-")
+	body := `{
+	  "chunks": [
+	    {
+	      "chunk_id": "` + chunkID + `",
+	      "title": "Publishable draft ` + marker + `",
+	      "path": "draft/publish/` + version + `",
+	      "source": "yi-flow-core",
+	      "content": "Publishable draft ` + marker + ` keeps signed artifacts stable after dry run before latest publish.",
+	      "citation_url": "https://yi-flow.com/docs/publish/` + version + `",
+	      "citation_title": "Publishable draft ` + marker + `",
+	      "source_name": "yi-flow docs",
+	      "license": "reviewed internal knowledge",
+	      "source_policy": "reviewed yi-flow product chunks only"
+	    }
+	  ],
+	  "prompts": [
+	    {
+	      "id": "publishable-answerable-` + strings.ReplaceAll(version, ".", "-") + `",
+	      "title": "Publishable answerable",
+	      "question": "What keeps signed artifacts stable after dry run?",
+	      "expected_chunk_ids": ["` + chunkID + `"],
+	      "answerability": "answerable",
+	      "answerable": true
+	    },
+	    {
+	      "id": "publishable-refusal-` + strings.ReplaceAll(version, ".", "-") + `",
+	      "title": "Publishable refusal",
+	      "question": "What is the weather in Tokyo?",
+	      "answerability": "ood",
+	      "answerable": false
+	    }
+	  ],
+	  "citations": {"citations":[]}
+	}`
+	response := saveDraftJSON(t, handler, kbID, version, body)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("save publishable draft status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func dryRunDraftBuild(t *testing.T, handler http.Handler, kbID string, version string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest("POST", "/admin/api/kb/"+kbID+"/drafts/"+version+"/build-dry-run?limit=50", nil)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func publishDraftFromStudio(t *testing.T, handler http.Handler, kbID string, version string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest("POST", "/admin/api/kb/"+kbID+"/drafts/"+version+"/publish", nil)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
 }
 
 func multipartRequest(
