@@ -29,9 +29,11 @@ packageURL  = https://yi-flow.com/knowledge-base/kb/yi-flow-core/versions/<versi
 Authorization: Bearer <ADMIN_TOKEN>
 ```
 
-管理页主流程已经切换为 WeKnora：chunk 创建、文档解析和人工审核在 WeKnora 中完成；本服务接收已审核的 WeKnora 导出 payload，生成 `chunks.sqlite`、`vector.index`、`knowledge-pack.zip`、`manifest.json`，签名后发布为 latest。
+管理页主流程是自研 Chunk Studio：在 `/knowledge-base/admin/` 里创建、编辑、审核、预览和发布 chunk 内容。外部项目只能作为 UI/交互参考，不作为 chunk authoring 后台。
 
-WeKnora 导出规范和 metadata 门禁见 `docs/rag/weknora-export.md`。
+Chunk Studio 的人工内容层是 `chunks`、`prompts` 和 `citations`；服务端继续生成 `chunks.sqlite`、`vector.index`、`knowledge-pack.zip`、`manifest.json`、`content_hash` 和 Ed25519 signature。iOS App 的消费格式不变。
+
+旧版 WeKnora reviewed export 入口仅作为兼容/迁移路径保留，不是管理页主流程。WeKnora 导出规范和 metadata 门禁见 `docs/rag/weknora-export.md`。
 
 旧版接口仍保留用于回滚和迁移。旧版“萌娘百科摘要知识包”构建入口从萌娘百科公开 sitemap/API 读取主条目标题和 `exintro` 摘要，生成摘要型 chunks 与 `citations.json` 引用；它不会保存完整条目、不会复刻 infobox 数据集、不会下载图片，也不用于 AI 训练。生成内容必须按 `CC BY-NC-SA 3.0 CN` 署名并保留原页面 URL。
 
@@ -44,7 +46,7 @@ KNOWLEDGE_PACK_SIGNING_KEY_BASE64=<base64-encoded-ed25519-seed-or-private-key>
 KNOWLEDGE_PACK_SIGNING_KEY_FILE=/var/lib/yi-flow-knowledge-base/signing/knowledge-pack-ed25519.key
 ```
 
-WeKnora dry-run 新版本：
+兼容路径：reviewed export dry-run：
 
 ```bash
 curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/yi-flow-core/weknora/export-dry-run" \
@@ -70,7 +72,7 @@ curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/yi-flow-core/wekno
   }'
 ```
 
-dry-run 通过后发布 latest：
+兼容路径：reviewed export dry-run 通过后发布 latest：
 
 ```bash
 curl -X POST "https://yi-flow.com/knowledge-base/admin/api/kb/yi-flow-core/weknora/export-publish" \

@@ -978,6 +978,12 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	if !bytes.Contains(response.Body.Bytes(), []byte("Knowledge Pack Admin")) {
 		t.Fatalf("admin page missing title: %s", response.Body.String())
 	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("Chunk Studio")) {
+		t.Fatalf("admin page missing Chunk Studio mainline")
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("自研 chunk 内容创建和管理后台")) {
+		t.Fatalf("admin page missing self-hosted chunk authoring description")
+	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("/admin/api/kb/")) {
 		t.Fatalf("admin page missing admin api usage")
 	}
@@ -987,18 +993,17 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	if !bytes.Contains(response.Body.Bytes(), []byte("/preview")) {
 		t.Fatalf("admin page missing preview api usage")
 	}
-	if !bytes.Contains(response.Body.Bytes(), []byte("WeKnora 知识包发布")) {
-		t.Fatalf("admin page missing WeKnora publisher")
-	}
-	if !bytes.Contains(response.Body.Bytes(), []byte("/weknora/export-dry-run")) {
-		t.Fatalf("admin page missing WeKnora dry-run api usage")
-	}
-	if !bytes.Contains(response.Body.Bytes(), []byte("/weknora/export-publish")) {
-		t.Fatalf("admin page missing WeKnora publish api usage")
-	}
-	for _, removed := range []string{"RAGFlow 知识包发布", "https://rag.yi-flow.com", "/ragflow/export-dry-run", "/ragflow/export-publish"} {
+	for _, removed := range []string{
+		"RAGFlow 知识包发布",
+		"WeKnora 知识包发布",
+		"Reviewed WeKnora export JSON",
+		"MaxKB",
+		"https://rag.yi-flow.com",
+		"/ragflow/export-dry-run",
+		"/ragflow/export-publish",
+	} {
 		if bytes.Contains(response.Body.Bytes(), []byte(removed)) {
-			t.Fatalf("admin page should not expose RAGFlow primary path %q", removed)
+			t.Fatalf("admin page should not expose external backend primary path %q", removed)
 		}
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("最近导出版本")) {

@@ -239,18 +239,15 @@ const adminPageHTML = `<!doctype html>
   </section>
 
   <section>
-    <h2>WeKnora 知识包发布</h2>
-    <p class="muted">chunk 创建、文档解析和人工审核在 WeKnora 中完成；这里接收已审核的 WeKnora 导出 payload，负责 dry-run、质量门禁、签名打包和发布 latest。</p>
+    <h2>Chunk Studio</h2>
+    <p class="muted">自研 chunk 内容创建和管理后台。后续 draft、chunk 编辑、citation、prompts、retrieval preview、quality gates、dry-run、publish 和 rollback 都在这里完成；外部 RAG/知识库项目只作为交互参考，不作为 chunk authoring 后台。</p>
     <div class="grid">
-      <label>Version <input id="weknoraVersion" placeholder="2026.06.25.001"></label>
-      <label>LLM recommended <input id="weknoraLLM" value="Qwen3-4B-Q4_K_M"></label>
+      <p class="muted"><strong>Draft workspace</strong><br>创建知识包草稿，保存未发布 chunks，先预览再发布。</p>
+      <p class="muted"><strong>Chunk editor</strong><br>编辑 title、path、source、content、citation、license、source policy 和 review status。</p>
+      <p class="muted"><strong>Quality gates</strong><br>发布前检查缺字段、重复、污染、citation 覆盖和 golden eval。</p>
+      <p class="muted"><strong>Signed package</strong><br>继续生成 manifest.json、knowledge-pack.zip、chunks.sqlite、citations.json 和 prompts.json。</p>
     </div>
-    <label>Reviewed WeKnora export JSON <textarea id="weknoraExportJSON" spellcheck="false"></textarea></label>
-    <button id="fillWeKnoraExportTemplate" class="secondary" type="button">填充 reviewed export 示例</button>
-    <button id="nextWeKnoraVersion" class="secondary" type="button">生成今日版本号</button>
-    <button id="dryRunWeKnoraExport" class="secondary" type="button">Dry-run 导出与质量门禁</button>
-    <button id="publishWeKnoraExport" type="button">通过门禁后发布 latest</button>
-    <p id="weknoraStatus" class="muted">Exporter status: idle</p>
+    <p id="weknoraStatus" class="muted">Chunk Studio status: direction locked; draft editor is tracked in #42/#43.</p>
     <div class="grid">
       <p class="muted">最近导出版本：<strong id="lastWeKnoraExportVersion">-</strong></p>
       <p class="muted">最近质量门禁：<strong id="lastWeKnoraQualityGate">-</strong></p>
@@ -267,6 +264,13 @@ const adminPageHTML = `<!doctype html>
     <button id="nextBuilderVersion" type="button"></button>
     <button id="importPreviewToBuilder" type="button"></button>
     <button id="buildPublish" type="button"></button>
+    <input id="weknoraVersion">
+    <input id="weknoraLLM" value="Qwen3-4B-Q4_K_M">
+    <textarea id="weknoraExportJSON" spellcheck="false"></textarea>
+    <button id="fillWeKnoraExportTemplate" type="button"></button>
+    <button id="nextWeKnoraVersion" type="button"></button>
+    <button id="dryRunWeKnoraExport" type="button"></button>
+    <button id="publishWeKnoraExport" type="button"></button>
     <input id="moegirlVersion">
     <input id="moegirlLimit" type="number" value="50">
     <textarea id="moegirlTitles" spellcheck="false"></textarea>
