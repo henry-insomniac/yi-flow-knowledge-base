@@ -69,6 +69,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleRAGQuery(w, r)
 	case r.Method == http.MethodGet && (r.URL.Path == "/admin" || r.URL.Path == "/admin/"):
 		h.handleAdminPage(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/source-audit"):
+		h.handleDraftSourceAudit(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/chunks"):
 		h.handleListDraftChunks(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/chunks"):
@@ -278,6 +280,13 @@ const adminPageHTML = `<!doctype html>
           <option value="rejected">rejected</option>
         </select>
       </label>
+      <label>Citation URL <input id="draftCitationURL" placeholder="https://zh.moegirl.org.cn/..."></label>
+      <label>Citation title <input id="draftCitationTitle" placeholder="来源页面标题"></label>
+      <label>Source name <input id="draftSourceName" placeholder="萌娘百科 / yi-flow"></label>
+      <label>License <input id="draftLicense" placeholder="CC BY-NC-SA 3.0 CN"></label>
+      <label>Source policy <input id="draftSourcePolicy" placeholder="summary/FAQ only; no full article mirror"></label>
+      <label>Revision ID <input id="draftSourceRevisionID" placeholder="123456"></label>
+      <label>Page ID <input id="draftSourcePageID" placeholder="331116"></label>
     </div>
     <label>Content <textarea id="draftChunkContent" spellcheck="false" placeholder="这里写 chunk 内容。保存后会进入草稿预览，但不会修改 latest。"></textarea></label>
     <button id="saveDraft" type="button">保存草稿</button>
@@ -300,6 +309,7 @@ const adminPageHTML = `<!doctype html>
       </label>
     </div>
     <button id="searchDraftChunks" class="secondary" type="button">搜索 chunks</button>
+    <button id="auditDraftSources" class="secondary" type="button">审计 source metadata</button>
     <p id="draftStatus" class="muted">Draft workspace status: not saved</p>
     <div id="draftChunks" class="chunk-list"></div>
     <p id="weknoraStatus" class="muted">Chunk Studio status: direction locked; draft editor is tracked in #42/#43.</p>
@@ -472,7 +482,7 @@ document.querySelector("#saveToken").onclick = () => {
   localStorage.setItem("yiFlowKnowledgeAdminToken", tokenInput.value);
   output.textContent = "token saved locally";
 };
-for (const selector of ["#draftChunkID", "#draftChunkTitle", "#draftChunkPath", "#draftChunkSource", "#draftChunkTags", "#draftChunkReviewStatus", "#draftChunkContent"]) {
+for (const selector of ["#draftChunkID", "#draftChunkTitle", "#draftChunkPath", "#draftChunkSource", "#draftChunkTags", "#draftChunkReviewStatus", "#draftCitationURL", "#draftCitationTitle", "#draftSourceName", "#draftLicense", "#draftSourcePolicy", "#draftSourceRevisionID", "#draftSourcePageID", "#draftChunkContent"]) {
   document.querySelector(selector).addEventListener("input", markDraftDirty);
   document.querySelector(selector).addEventListener("change", markDraftDirty);
 }
@@ -543,6 +553,12 @@ function fillDraftTemplate(force) {
   if (force || !document.querySelector("#draftChunkReviewStatus").value.trim()) {
     document.querySelector("#draftChunkReviewStatus").value = chunk.review_status || "draft";
   }
+  if (force || !document.querySelector("#draftLicense").value.trim()) {
+    document.querySelector("#draftLicense").value = chunk.license || "";
+  }
+  if (force || !document.querySelector("#draftSourcePolicy").value.trim()) {
+    document.querySelector("#draftSourcePolicy").value = chunk.source_policy || "";
+  }
   if (force || !document.querySelector("#draftChunkContent").value.trim()) {
     document.querySelector("#draftChunkContent").value = chunk.content;
   }
@@ -558,7 +574,14 @@ function draftChunkPayloadFromForm() {
     source: document.querySelector("#draftChunkSource").value.trim(),
     content: document.querySelector("#draftChunkContent").value.trim(),
     tags: document.querySelector("#draftChunkTags").value.split(",").map((item) => item.trim()).filter(Boolean),
-    review_status: document.querySelector("#draftChunkReviewStatus").value.trim() || "draft"
+    review_status: document.querySelector("#draftChunkReviewStatus").value.trim() || "draft",
+    citation_url: document.querySelector("#draftCitationURL").value.trim(),
+    citation_title: document.querySelector("#draftCitationTitle").value.trim(),
+    source_name: document.querySelector("#draftSourceName").value.trim(),
+    license: document.querySelector("#draftLicense").value.trim(),
+    source_policy: document.querySelector("#draftSourcePolicy").value.trim(),
+    source_revision_id: document.querySelector("#draftSourceRevisionID").value.trim(),
+    source_page_id: document.querySelector("#draftSourcePageID").value.trim()
   };
 }
 function draftPayloadFromForm() {
@@ -576,6 +599,13 @@ function fillDraftFromChunk(chunk) {
   document.querySelector("#draftChunkSource").value = chunk.source || "";
   document.querySelector("#draftChunkTags").value = (chunk.tags || []).join(", ");
   document.querySelector("#draftChunkReviewStatus").value = chunk.review_status || "draft";
+  document.querySelector("#draftCitationURL").value = chunk.citation_url || chunk.source_url || "";
+  document.querySelector("#draftCitationTitle").value = chunk.citation_title || "";
+  document.querySelector("#draftSourceName").value = chunk.source_name || "";
+  document.querySelector("#draftLicense").value = chunk.license || "";
+  document.querySelector("#draftSourcePolicy").value = chunk.source_policy || "";
+  document.querySelector("#draftSourceRevisionID").value = chunk.source_revision_id || chunk.revision_id || "";
+  document.querySelector("#draftSourcePageID").value = chunk.source_page_id || "";
   document.querySelector("#draftChunkContent").value = chunk.content || "";
   setDraftClean("Draft workspace status: selected · " + selectedDraftChunkID);
 }
@@ -765,6 +795,19 @@ document.querySelector("#deleteDraftChunk").onclick = async () => {
 };
 document.querySelector("#searchDraftChunks").onclick = async () => {
   await loadDraftChunkList();
+};
+document.querySelector("#auditDraftSources").onclick = async () => {
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/source-audit", {
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: source audit failed";
+    return;
+  }
+  const decoded = JSON.parse(text);
+  const violations = (decoded.violations || []).length;
+  draftStatus.textContent = "Draft workspace status: source audit · " + violations + " violations";
 };
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {
@@ -1050,6 +1093,29 @@ function renderChunk(chunk) {
   content.className = "chunk-content";
   content.textContent = chunk.content;
   card.append(content);
+
+  if (chunk.source_url || chunk.license || chunk.source_policy || chunk.citation_title || chunk.source_name) {
+    const citation = document.createElement("div");
+    citation.className = "chunk-meta";
+    const citationParts = [
+      chunk.citation_title ? "引用：" + chunk.citation_title : "",
+      chunk.source_name ? "来源：" + chunk.source_name : "",
+      chunk.license ? "许可：" + chunk.license : "",
+      chunk.source_policy ? "策略：" + chunk.source_policy : "",
+      chunk.revision_id ? "revision：" + chunk.revision_id : "",
+      chunk.source_page_id ? "page：" + chunk.source_page_id : ""
+    ].filter(Boolean);
+    citation.textContent = citationParts.join(" · ");
+    if (chunk.source_url) {
+      const link = document.createElement("a");
+      link.href = chunk.source_url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = "打开来源";
+      citation.append(" · ", link);
+    }
+    card.append(citation);
+  }
 
   const questions = document.createElement("div");
   questions.className = "question-row";

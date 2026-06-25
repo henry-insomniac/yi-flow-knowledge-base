@@ -1407,6 +1407,222 @@ func TestAdminDraftChunkSearchLocalLatencySmoke(t *testing.T) {
 	}
 }
 
+func TestAdminDraftChunkCitationMetadataAndSourceAudit(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	saveMoegirl := saveDraftJSON(t, handler, "moegirl-acgn-faq", "2026.06.26.citation", `{
+	  "chunks": [
+	    {
+	      "chunk_id": "moegirl-page-331116-faq-overview",
+	      "title": "原神 FAQ",
+	      "path": "moegirl/faq/原神/overview",
+	      "source": "萌娘百科",
+	      "content": "原神是米哈游开发的开放世界冒险游戏摘要。",
+	      "tags": ["moegirl", "faq"],
+	      "review_status": "approved",
+	      "citation_url": "https://zh.moegirl.org.cn/原神",
+	      "citation_title": "原神",
+	      "source_name": "萌娘百科",
+	      "license": "CC BY-NC-SA 3.0 CN",
+	      "source_policy": "summary/FAQ only; no full article mirror; no AI training",
+	      "source_revision_id": "123456",
+	      "source_page_id": "331116"
+	    }
+	  ],
+	  "prompts": [],
+	  "citations": {"citations":[]}
+	}`)
+	if saveMoegirl.Code != http.StatusCreated {
+		t.Fatalf("save moegirl draft status=%d body=%s", saveMoegirl.Code, saveMoegirl.Body.String())
+	}
+
+	previewDraft := httptest.NewRequest("GET", "/admin/api/kb/moegirl-acgn-faq/drafts/2026.06.26.citation/preview", nil)
+	previewDraft.Header.Set("Authorization", "Bearer test-admin-token")
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, previewDraft)
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("preview draft status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+	var preview struct {
+		Chunks []struct {
+			ChunkID          string `json:"chunk_id"`
+			SourceURL        string `json:"source_url"`
+			CitationTitle    string `json:"citation_title"`
+			SourceName       string `json:"source_name"`
+			License          string `json:"license"`
+			SourcePolicy     string `json:"source_policy"`
+			RevisionID       string `json:"revision_id"`
+			SourcePageID     string `json:"source_page_id"`
+			SuggestedIgnored string `json:"-"`
+		} `json:"chunks"`
+	}
+	if err := json.Unmarshal(previewResponse.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if len(preview.Chunks) != 1 {
+		t.Fatalf("preview chunks=%d body=%s", len(preview.Chunks), previewResponse.Body.String())
+	}
+	chunk := preview.Chunks[0]
+	if chunk.SourceURL != "https://zh.moegirl.org.cn/原神" || chunk.CitationTitle != "原神" || chunk.SourceName != "萌娘百科" || chunk.License != "CC BY-NC-SA 3.0 CN" || chunk.SourcePolicy == "" || chunk.RevisionID != "123456" || chunk.SourcePageID != "331116" {
+		t.Fatalf("preview citation metadata = %+v", chunk)
+	}
+
+	audit := httptest.NewRequest("GET", "/admin/api/kb/moegirl-acgn-faq/drafts/2026.06.26.citation/source-audit", nil)
+	audit.Header.Set("Authorization", "Bearer test-admin-token")
+	auditResponse := httptest.NewRecorder()
+	handler.ServeHTTP(auditResponse, audit)
+	if auditResponse.Code != http.StatusOK {
+		t.Fatalf("source audit status=%d body=%s", auditResponse.Code, auditResponse.Body.String())
+	}
+	var auditResult struct {
+		KBID               string         `json:"kb_id"`
+		ChunkCount         int            `json:"chunk_count"`
+		SourceFamilyCounts map[string]int `json:"source_family_counts"`
+		Violations         []struct {
+			ChunkID string `json:"chunk_id"`
+			Family  string `json:"family"`
+			Field   string `json:"field"`
+		} `json:"violations"`
+	}
+	if err := json.Unmarshal(auditResponse.Body.Bytes(), &auditResult); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if auditResult.KBID != "moegirl-acgn-faq" || auditResult.ChunkCount != 1 || auditResult.SourceFamilyCounts["moegirl"] != 1 || len(auditResult.Violations) != 0 {
+		t.Fatalf("audit result = %+v body=%s", auditResult, auditResponse.Body.String())
+	}
+
+	coreContamination := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.contaminated", `{
+	  "chunks": [
+	    {
+	      "chunk_id": "moegirl-page-331116",
+	      "title": "原神",
+	      "path": "moegirl/faq/原神",
+	      "source": "萌娘百科",
+	      "content": "yi-flow-core must not accept ACG external chunks.",
+	      "citation_url": "https://zh.moegirl.org.cn/原神",
+	      "license": "CC BY-NC-SA 3.0 CN",
+	      "source_policy": "summary/FAQ only"
+	    }
+	  ],
+	  "prompts": [],
+	  "citations": {"citations":[]}
+	}`)
+	if coreContamination.Code != http.StatusBadRequest {
+		t.Fatalf("core contamination status=%d body=%s", coreContamination.Code, coreContamination.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(coreContamination.Body.String()), "rejects") || !strings.Contains(strings.ToLower(coreContamination.Body.String()), "moegirl") {
+		t.Fatalf("core contamination error should mention rejection and source family: %s", coreContamination.Body.String())
+	}
+
+	missingMoegirlMetadata := saveDraftJSON(t, handler, "moegirl-acgn-faq", "2026.06.26.missing-citation", `{
+	  "chunks": [
+	    {
+	      "chunk_id": "moegirl-page-331116",
+	      "title": "原神",
+	      "path": "moegirl/faq/原神",
+	      "source": "萌娘百科",
+	      "content": "Missing license and source policy should be rejected.",
+	      "citation_url": "https://zh.moegirl.org.cn/原神"
+	    }
+	  ],
+	  "prompts": [],
+	  "citations": {"citations":[]}
+	}`)
+	if missingMoegirlMetadata.Code != http.StatusBadRequest {
+		t.Fatalf("missing moegirl metadata status=%d body=%s", missingMoegirlMetadata.Code, missingMoegirlMetadata.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(missingMoegirlMetadata.Body.String()), "license") {
+		t.Fatalf("missing metadata error should mention license: %s", missingMoegirlMetadata.Body.String())
+	}
+}
+
+func TestBuildPublishUsesChunkCitationMetadataForPreview(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	missingMetadata := httptest.NewRequest("POST", "/admin/api/kb/moegirl-acgn-faq/build-publish", bytes.NewBufferString(`{
+	  "version": "2026.06.26.missing-citation",
+	  "chunks": [
+	    {
+	      "chunk_id": "moegirl-page-331116-faq-overview",
+	      "title": "原神 FAQ",
+	      "path": "moegirl/faq/原神/overview",
+	      "source": "萌娘百科",
+	      "content": "缺少 license/source_policy 的 Moegirl chunk 不应发布。",
+	      "citation_url": "https://zh.moegirl.org.cn/原神"
+	    }
+	  ],
+	  "prompts": []
+	}`))
+	missingMetadata.Header.Set("Authorization", "Bearer test-admin-token")
+	missingMetadata.Header.Set("Content-Type", "application/json")
+	missingMetadataResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingMetadataResponse, missingMetadata)
+	if missingMetadataResponse.Code != http.StatusBadRequest {
+		t.Fatalf("missing metadata publish status=%d body=%s", missingMetadataResponse.Code, missingMetadataResponse.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(missingMetadataResponse.Body.String()), "license") {
+		t.Fatalf("missing metadata publish error should mention license: %s", missingMetadataResponse.Body.String())
+	}
+
+	body := bytes.NewBufferString(`{
+	  "version": "2026.06.26.citation",
+	  "chunks": [
+	    {
+	      "chunk_id": "moegirl-page-331116-faq-overview",
+	      "title": "原神 FAQ",
+	      "path": "moegirl/faq/原神/overview",
+	      "source": "萌娘百科",
+	      "content": "原神是米哈游开发的开放世界冒险游戏摘要。",
+	      "citation_url": "https://zh.moegirl.org.cn/原神",
+	      "citation_title": "原神",
+	      "source_name": "萌娘百科",
+	      "license": "CC BY-NC-SA 3.0 CN",
+	      "source_policy": "summary/FAQ only; no full article mirror; no AI training",
+	      "source_revision_id": "123456",
+	      "source_page_id": "331116"
+	    }
+	  ],
+	  "prompts": []
+	}`)
+	request := httptest.NewRequest("POST", "/admin/api/kb/moegirl-acgn-faq/build-publish", body)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("build publish status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, httptest.NewRequest("GET", "/kb/moegirl-acgn-faq/latest/preview", nil))
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+	if !bytes.Contains(previewResponse.Body.Bytes(), []byte(`"source_url":"https://zh.moegirl.org.cn/原神"`)) ||
+		!bytes.Contains(previewResponse.Body.Bytes(), []byte(`"license":"CC BY-NC-SA 3.0 CN"`)) ||
+		!bytes.Contains(previewResponse.Body.Bytes(), []byte(`"source_policy":"summary/FAQ only; no full article mirror; no AI training"`)) {
+		t.Fatalf("preview missing citation metadata generated from chunk fields: %s", previewResponse.Body.String())
+	}
+}
+
 func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -1448,6 +1664,12 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 		"复制 chunk",
 		"删除 chunk",
 		"unsaved changes",
+		"Citation URL",
+		"Citation title",
+		"Source name",
+		"License",
+		"Source policy",
+		"审计 source metadata",
 	} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("admin page missing chunk editor control %q", expected)

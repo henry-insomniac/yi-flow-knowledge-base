@@ -40,8 +40,12 @@ type knowledgePackPreviewChunk struct {
 	Source             string   `json:"source"`
 	FAQType            string   `json:"faq_type,omitempty"`
 	SourceURL          string   `json:"source_url,omitempty"`
+	CitationTitle      string   `json:"citation_title,omitempty"`
+	SourceName         string   `json:"source_name,omitempty"`
 	License            string   `json:"license,omitempty"`
+	SourcePolicy       string   `json:"source_policy,omitempty"`
 	RevisionID         string   `json:"revision_id,omitempty"`
+	SourcePageID       string   `json:"source_page_id,omitempty"`
 	Content            string   `json:"content"`
 	SuggestedQuestions []string `json:"suggested_questions"`
 }
@@ -270,8 +274,12 @@ func enrichPreviewChunksFromCitations(chunks []knowledgePackPreviewChunk, files 
 		}
 		chunks[index].FAQType = citation.FAQType
 		chunks[index].SourceURL = citation.URL
+		chunks[index].CitationTitle = citation.Title
+		chunks[index].SourceName = citation.Source
 		chunks[index].License = citation.License
+		chunks[index].SourcePolicy = citation.SourcePolicy
 		chunks[index].RevisionID = citation.RevisionID
+		chunks[index].SourcePageID = citation.PageID
 	}
 }
 
@@ -289,11 +297,15 @@ type previewCitationFile struct {
 }
 
 type previewCitation struct {
-	ChunkID    string `json:"chunk_id"`
-	FAQType    string `json:"faq_type"`
-	URL        string `json:"url"`
-	License    string `json:"license"`
-	RevisionID string `json:"revision_id"`
+	ChunkID      string `json:"chunk_id"`
+	FAQType      string `json:"faq_type"`
+	Source       string `json:"source"`
+	Title        string `json:"title"`
+	URL          string `json:"url"`
+	License      string `json:"license"`
+	SourcePolicy string `json:"source_policy"`
+	RevisionID   string `json:"revision_id"`
+	PageID       string `json:"page_id"`
 }
 
 func previewCitationsByChunkID(file *zip.File) (map[string]previewCitation, error) {

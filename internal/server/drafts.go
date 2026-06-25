@@ -143,6 +143,13 @@ func (h *Handler) handleDraftPreview(w http.ResponseWriter, r *http.Request) {
 			Title:              chunk.Title,
 			Path:               chunk.Path,
 			Source:             chunk.Source,
+			SourceURL:          chunk.CitationURL,
+			CitationTitle:      chunk.CitationTitle,
+			SourceName:         chunk.SourceName,
+			License:            chunk.License,
+			SourcePolicy:       chunk.SourcePolicy,
+			RevisionID:         chunk.SourceRevisionID,
+			SourcePageID:       chunk.SourcePageID,
 			Content:            truncateRunes(strings.TrimSpace(chunk.Content), maxPreviewContentRunes),
 			SuggestedQuestions: questions,
 		})
@@ -162,6 +169,30 @@ func (h *Handler) handleDraftPreview(w http.ResponseWriter, r *http.Request) {
 		Latest:  false,
 		Chunks:  chunks,
 	})
+}
+
+func (h *Handler) handleDraftSourceAudit(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	kbID, version, ok, err := parseAdminDraftPath(r.URL.Path, "/source-audit")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	draft, err := h.readDraft(kbID, version)
+	if err != nil {
+		writeDraftReadError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sourceAuditForDraft(draft))
 }
 
 func (h *Handler) handleListDraftChunks(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +262,10 @@ func (h *Handler) handleCreateDraftChunk(w http.ResponseWriter, r *http.Request)
 		http.Error(w, errDraftChunkDuplicate.Error()+": "+chunk.ChunkID, http.StatusConflict)
 		return
 	}
+	if err := validateChunkSourceMetadata(kbID, []knowledgePackBuildChunk{chunk}); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	draft.Chunks = append(draft.Chunks, chunk)
 	draft.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err := h.writeDraft(draft); err != nil {
@@ -284,6 +319,10 @@ func (h *Handler) handleUpdateDraftChunk(w http.ResponseWriter, r *http.Request)
 			http.Error(w, errDraftChunkDuplicate.Error()+": "+chunk.ChunkID, http.StatusConflict)
 			return
 		}
+	}
+	if err := validateChunkSourceMetadata(kbID, []knowledgePackBuildChunk{chunk}); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	draft.Chunks[index] = chunk
 	draft.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -350,6 +389,10 @@ func (h *Handler) handleDuplicateDraftChunk(w http.ResponseWriter, r *http.Reque
 	}
 	if _, exists := findDraftChunkIndex(draft.Chunks, normalized.ChunkID); exists {
 		http.Error(w, errDraftChunkDuplicate.Error()+": "+normalized.ChunkID, http.StatusConflict)
+		return
+	}
+	if err := validateChunkSourceMetadata(kbID, []knowledgePackBuildChunk{normalized}); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -420,6 +463,9 @@ func (h *Handler) buildDraftDocument(kbID string, version string, payload draftS
 
 	chunks, err := normalizeDraftChunks(payload.Chunks)
 	if err != nil {
+		return draftDocument{}, err
+	}
+	if err := validateChunkSourceMetadata(kbID, chunks); err != nil {
 		return draftDocument{}, err
 	}
 
@@ -660,6 +706,72 @@ func writeDraftReadError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	http.Error(w, "read draft failed", http.StatusInternalServerError)
+}
+
+type draftSourceAudit struct {
+	KBID               string                 `json:"kb_id"`
+	Version            string                 `json:"version"`
+	Status             string                 `json:"status"`
+	ChunkCount         int                    `json:"chunk_count"`
+	SourceFamilyCounts map[string]int         `json:"source_family_counts"`
+	Violations         []draftSourceViolation `json:"violations"`
+}
+
+type draftSourceViolation struct {
+	ChunkID string `json:"chunk_id"`
+	Family  string `json:"family"`
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+func sourceAuditForDraft(draft draftDocument) draftSourceAudit {
+	audit := draftSourceAudit{
+		KBID:               draft.KBID,
+		Version:            draft.Version,
+		Status:             draft.Status,
+		ChunkCount:         len(draft.Chunks),
+		SourceFamilyCounts: map[string]int{},
+		Violations:         []draftSourceViolation{},
+	}
+	for _, chunk := range draft.Chunks {
+		family := sourceFamilyForChunk(chunk)
+		audit.SourceFamilyCounts[family]++
+		if err := validateChunkSourceMetadata(draft.KBID, []knowledgePackBuildChunk{chunk}); err != nil {
+			field := "source_metadata"
+			if draft.KBID == "yi-flow-core" {
+				if _, detectedField, ok := forbiddenCoreChunkSourceFamily(chunk); ok {
+					field = detectedField
+				}
+			}
+			audit.Violations = append(audit.Violations, draftSourceViolation{
+				ChunkID: chunk.ChunkID,
+				Family:  family,
+				Field:   field,
+				Message: err.Error(),
+			})
+		}
+	}
+	return audit
+}
+
+func sourceFamilyForChunk(chunk knowledgePackBuildChunk) string {
+	for _, candidate := range chunkSourceMetadataCandidates(chunk) {
+		if family, ok := classifyExternalSourceFamily(candidate.value); ok {
+			return family
+		}
+	}
+	for _, candidate := range chunkSourceMetadataCandidates(chunk) {
+		if family, ok := classifyInternalSourceFamily(candidate.value); ok {
+			return family
+		}
+	}
+	if strings.TrimSpace(chunk.SourceName) != "" {
+		return strings.ToLower(strings.TrimSpace(chunk.SourceName))
+	}
+	if strings.TrimSpace(chunk.Source) != "" {
+		return strings.ToLower(strings.TrimSpace(chunk.Source))
+	}
+	return "unknown"
 }
 
 func draftSuggestedQuestions(prompts []knowledgePackBuildPrompt) []string {

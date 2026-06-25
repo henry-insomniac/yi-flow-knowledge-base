@@ -36,13 +36,20 @@ type buildPublishRequest struct {
 }
 
 type knowledgePackBuildChunk struct {
-	ChunkID      string   `json:"chunk_id"`
-	Title        string   `json:"title"`
-	Path         string   `json:"path"`
-	Source       string   `json:"source"`
-	Content      string   `json:"content"`
-	Tags         []string `json:"tags,omitempty"`
-	ReviewStatus string   `json:"review_status,omitempty"`
+	ChunkID          string   `json:"chunk_id"`
+	Title            string   `json:"title"`
+	Path             string   `json:"path"`
+	Source           string   `json:"source"`
+	Content          string   `json:"content"`
+	Tags             []string `json:"tags,omitempty"`
+	ReviewStatus     string   `json:"review_status,omitempty"`
+	CitationURL      string   `json:"citation_url,omitempty"`
+	CitationTitle    string   `json:"citation_title,omitempty"`
+	SourceName       string   `json:"source_name,omitempty"`
+	License          string   `json:"license,omitempty"`
+	SourcePolicy     string   `json:"source_policy,omitempty"`
+	SourceRevisionID string   `json:"source_revision_id,omitempty"`
+	SourcePageID     string   `json:"source_page_id,omitempty"`
 }
 
 type knowledgePackBuildPrompt struct {
@@ -188,7 +195,7 @@ func buildKnowledgePack(
 	}
 	promptsData = append(promptsData, '\n')
 
-	citationsData, err := normalizeCitations(payload.Citations)
+	citationsData, err := normalizeBuildCitations(kbID, chunks, payload.Citations)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -224,6 +231,13 @@ func normalizeBuildChunk(index int, chunk knowledgePackBuildChunk) (knowledgePac
 	if chunk.ReviewStatus == "" {
 		chunk.ReviewStatus = draftStatus
 	}
+	chunk.CitationURL = strings.TrimSpace(chunk.CitationURL)
+	chunk.CitationTitle = strings.TrimSpace(chunk.CitationTitle)
+	chunk.SourceName = strings.TrimSpace(chunk.SourceName)
+	chunk.License = strings.TrimSpace(chunk.License)
+	chunk.SourcePolicy = strings.TrimSpace(chunk.SourcePolicy)
+	chunk.SourceRevisionID = strings.TrimSpace(chunk.SourceRevisionID)
+	chunk.SourcePageID = strings.TrimSpace(chunk.SourcePageID)
 
 	if chunk.ChunkID == "" {
 		return chunk, fmt.Errorf("chunks[%d].chunk_id is required", index)
@@ -308,6 +322,142 @@ func normalizeCitations(raw json.RawMessage) ([]byte, error) {
 	}
 	raw = append(raw, '\n')
 	return raw, nil
+}
+
+type buildCitationFile struct {
+	Source        string                      `json:"source,omitempty"`
+	License       string                      `json:"license,omitempty"`
+	SourcePolicy  string                      `json:"source_policy,omitempty"`
+	Citations     []buildChunkCitation        `json:"citations"`
+	CrawlManifest []moegirlCrawlManifestEntry `json:"crawl_manifest,omitempty"`
+}
+
+type buildChunkCitation struct {
+	ChunkID      string `json:"chunk_id"`
+	Source       string `json:"source,omitempty"`
+	Title        string `json:"title,omitempty"`
+	URL          string `json:"url,omitempty"`
+	License      string `json:"license,omitempty"`
+	SourcePolicy string `json:"source_policy,omitempty"`
+	RevisionID   string `json:"revision_id,omitempty"`
+	PageID       string `json:"page_id,omitempty"`
+}
+
+func normalizeBuildCitations(kbID string, chunks []knowledgePackBuildChunk, raw json.RawMessage) ([]byte, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+		return normalizeCitations(raw)
+	}
+
+	citationFile := buildCitationFile{
+		Citations: make([]buildChunkCitation, 0, len(chunks)),
+	}
+	sourceCounts := map[string]int{}
+	licenseCounts := map[string]int{}
+	policyCounts := map[string]int{}
+
+	for index, chunk := range chunks {
+		if !chunkHasCitationMetadata(chunk) {
+			continue
+		}
+		citation := buildChunkCitation{
+			ChunkID:      chunk.ChunkID,
+			Source:       firstNonEmpty(chunk.SourceName, chunk.Source),
+			Title:        firstNonEmpty(chunk.CitationTitle, chunk.Title),
+			URL:          chunk.CitationURL,
+			License:      chunk.License,
+			SourcePolicy: chunk.SourcePolicy,
+			RevisionID:   chunk.SourceRevisionID,
+			PageID:       chunk.SourcePageID,
+		}
+		citationFile.Citations = append(citationFile.Citations, citation)
+		if citation.Source != "" {
+			sourceCounts[citation.Source]++
+		}
+		if citation.License != "" {
+			licenseCounts[citation.License]++
+		}
+		if citation.SourcePolicy != "" {
+			policyCounts[citation.SourcePolicy]++
+		}
+		if isMoegirlKB(kbID) {
+			pageID, err := parseMoegirlPageID(chunk.SourcePageID)
+			if err != nil {
+				return nil, fmt.Errorf("chunks[%d].source_page_id must be numeric for moegirl citation metadata", index)
+			}
+			citationFile.CrawlManifest = append(citationFile.CrawlManifest, moegirlCrawlManifestEntry{
+				KBID:         kbID,
+				SourceName:   firstNonEmpty(chunk.SourceName, chunk.Source),
+				SourceURL:    chunk.CitationURL,
+				CanonicalURL: chunk.CitationURL,
+				PageID:       pageID,
+				RevisionID:   chunk.SourceRevisionID,
+				Touched:      time.Now().UTC().Format(time.RFC3339),
+				FetchedAt:    time.Now().UTC().Format(time.RFC3339),
+				License:      chunk.License,
+				SourcePolicy: chunk.SourcePolicy,
+				Categories:   nonEmptyStringsWithFallback(chunk.Tags, "faq"),
+			})
+		}
+	}
+
+	citationFile.Source = mostFrequentString(sourceCounts)
+	citationFile.License = mostFrequentString(licenseCounts)
+	citationFile.SourcePolicy = mostFrequentString(policyCounts)
+	data, err := json.MarshalIndent(citationFile, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode citations: %w", err)
+	}
+	data = append(data, '\n')
+	return data, nil
+}
+
+func chunkHasCitationMetadata(chunk knowledgePackBuildChunk) bool {
+	return chunk.CitationURL != "" ||
+		chunk.CitationTitle != "" ||
+		chunk.SourceName != "" ||
+		chunk.License != "" ||
+		chunk.SourcePolicy != "" ||
+		chunk.SourceRevisionID != "" ||
+		chunk.SourcePageID != ""
+}
+
+func parseMoegirlPageID(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("page id is required")
+	}
+	pageID := 0
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("page id must be numeric")
+		}
+		pageID = pageID*10 + int(r-'0')
+	}
+	if pageID == 0 {
+		return 0, fmt.Errorf("page id must be positive")
+	}
+	return pageID, nil
+}
+
+func nonEmptyStringsWithFallback(values []string, fallback string) []string {
+	values = normalizeStringList(values)
+	if len(values) == 0 && fallback != "" {
+		return []string{fallback}
+	}
+	return values
+}
+
+func mostFrequentString(counts map[string]int) string {
+	best := ""
+	bestCount := 0
+	for value, count := range counts {
+		if count > bestCount || (count == bestCount && (best == "" || value < best)) {
+			best = value
+			bestCount = count
+		}
+	}
+	return best
 }
 
 func emptyVectorIndex(dimension int) []byte {
