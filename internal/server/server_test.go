@@ -1623,6 +1623,244 @@ func TestBuildPublishUsesChunkCitationMetadataForPreview(t *testing.T) {
 	}
 }
 
+func TestAdminDraftPromptCRUDAndPromptPreview(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.prompts", `{
+	  "chunks": [
+	    {
+	      "chunk_id": "alpha",
+	      "title": "Alpha chunk",
+	      "path": "draft/prompts/alpha",
+	      "source": "manual",
+	      "content": "Alpha content for prompt preview."
+	    },
+	    {
+	      "chunk_id": "beta",
+	      "title": "Beta chunk",
+	      "path": "draft/prompts/beta",
+	      "source": "manual",
+	      "content": "Beta content for prompt preview."
+	    }
+	  ],
+	  "prompts": [],
+	  "citations": {"citations":[]}
+	}`)
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	createPrompt := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.prompts/prompts", bytes.NewBufferString(`{
+	  "id": "prompt-alpha",
+	  "title": "Alpha golden",
+	  "question": "Where is alpha?",
+	  "expected_chunk_ids": ["alpha"],
+	  "tags": ["golden", "smoke"],
+	  "answerability": "answerable",
+	  "answerable": true
+	}`))
+	createPrompt.Header.Set("Authorization", "Bearer test-admin-token")
+	createPrompt.Header.Set("Content-Type", "application/json")
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, createPrompt)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("create prompt status=%d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+
+	invalidPrompt := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.prompts/prompts", bytes.NewBufferString(`{
+	  "id": "prompt-missing",
+	  "title": "Missing expected chunk",
+	  "question": "Where is missing?",
+	  "expected_chunk_ids": ["missing"],
+	  "answerability": "answerable",
+	  "answerable": true
+	}`))
+	invalidPrompt.Header.Set("Authorization", "Bearer test-admin-token")
+	invalidPrompt.Header.Set("Content-Type", "application/json")
+	invalidResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidResponse, invalidPrompt)
+	if invalidResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid expected chunk status=%d body=%s", invalidResponse.Code, invalidResponse.Body.String())
+	}
+	if !strings.Contains(invalidResponse.Body.String(), "expected_chunk_ids") {
+		t.Fatalf("invalid expected chunk error should mention expected_chunk_ids: %s", invalidResponse.Body.String())
+	}
+
+	previewPrompt := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.prompts/prompts/prompt-alpha/preview", nil)
+	previewPrompt.Header.Set("Authorization", "Bearer test-admin-token")
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, previewPrompt)
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("prompt preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+	var promptPreview struct {
+		Prompt struct {
+			ID               string   `json:"id"`
+			Question         string   `json:"question"`
+			ExpectedChunkIDs []string `json:"expected_chunk_ids"`
+			Answerable       bool     `json:"answerable"`
+			Answerability    string   `json:"answerability"`
+		} `json:"prompt"`
+		Chunks []struct {
+			ChunkID string `json:"chunk_id"`
+			Title   string `json:"title"`
+		} `json:"chunks"`
+	}
+	if err := json.Unmarshal(previewResponse.Body.Bytes(), &promptPreview); err != nil {
+		t.Fatalf("decode prompt preview: %v", err)
+	}
+	if promptPreview.Prompt.ID != "prompt-alpha" || promptPreview.Prompt.Question != "Where is alpha?" || !promptPreview.Prompt.Answerable || promptPreview.Prompt.Answerability != "answerable" {
+		t.Fatalf("prompt preview prompt = %+v", promptPreview.Prompt)
+	}
+	if len(promptPreview.Chunks) != 1 || promptPreview.Chunks[0].ChunkID != "alpha" {
+		t.Fatalf("prompt preview chunks=%+v body=%s", promptPreview.Chunks, previewResponse.Body.String())
+	}
+
+	updatePrompt := httptest.NewRequest("PUT", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.prompts/prompts/prompt-alpha", bytes.NewBufferString(`{
+	  "id": "prompt-alpha",
+	  "title": "Alpha refusal",
+	  "question": "Should alpha refuse?",
+	  "expected_chunk_ids": [],
+	  "tags": ["golden", "refusal"],
+	  "answerability": "refusal",
+	  "answerable": false
+	}`))
+	updatePrompt.Header.Set("Authorization", "Bearer test-admin-token")
+	updatePrompt.Header.Set("Content-Type", "application/json")
+	updateResponse := httptest.NewRecorder()
+	handler.ServeHTTP(updateResponse, updatePrompt)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update prompt status=%d body=%s", updateResponse.Code, updateResponse.Body.String())
+	}
+
+	deletePrompt := httptest.NewRequest("DELETE", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.prompts/prompts/prompt-alpha", nil)
+	deletePrompt.Header.Set("Authorization", "Bearer test-admin-token")
+	deleteResponse := httptest.NewRecorder()
+	handler.ServeHTTP(deleteResponse, deletePrompt)
+	if deleteResponse.Code != http.StatusOK {
+		t.Fatalf("delete prompt status=%d body=%s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+
+	for index := 0; index < 20; index++ {
+		promptID := "prompt-" + strconv.Itoa(index)
+		body := bytes.NewBufferString(`{
+		  "id": "` + promptID + `",
+		  "title": "Prompt ` + strconv.Itoa(index) + `",
+		  "question": "Question ` + strconv.Itoa(index) + `?",
+		  "expected_chunk_ids": ["beta"],
+		  "tags": ["batch"],
+		  "answerability": "answerable",
+		  "answerable": true
+		}`)
+		request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.prompts/prompts", body)
+		request.Header.Set("Authorization", "Bearer test-admin-token")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create prompt %d status=%d body=%s", index, response.Code, response.Body.String())
+		}
+	}
+
+	listPrompts := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.prompts/prompts", nil)
+	listPrompts.Header.Set("Authorization", "Bearer test-admin-token")
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, listPrompts)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list prompts status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	var listResult struct {
+		Total   int `json:"total"`
+		Prompts []struct {
+			ID               string   `json:"id"`
+			ExpectedChunkIDs []string `json:"expected_chunk_ids"`
+			Tags             []string `json:"tags"`
+			Answerable       bool     `json:"answerable"`
+		} `json:"prompts"`
+	}
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &listResult); err != nil {
+		t.Fatalf("decode list prompts: %v", err)
+	}
+	if listResult.Total != 20 || len(listResult.Prompts) != 20 {
+		t.Fatalf("list prompts = %+v body=%s", listResult, listResponse.Body.String())
+	}
+}
+
+func TestBuildPublishExportsPromptMetadata(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir:               t.TempDir(),
+		AdminToken:               "test-admin-token",
+		KnowledgePackSigningSeed: privateKey.Seed(),
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{
+	  "version": "2026.06.26.prompts",
+	  "chunks": [
+	    {
+	      "chunk_id": "alpha",
+	      "title": "Alpha chunk",
+	      "path": "draft/prompts/alpha",
+	      "source": "manual",
+	      "content": "Alpha content for prompt export."
+	    }
+	  ],
+	  "prompts": [
+	    {
+	      "id": "prompt-alpha",
+	      "title": "Alpha golden",
+	      "question": "Where is alpha?",
+	      "expected_chunk_ids": ["alpha"],
+	      "tags": ["golden"],
+	      "answerability": "answerable",
+	      "answerable": true
+	    },
+	    {
+	      "id": "prompt-ood",
+	      "title": "OOD refusal",
+	      "question": "What is the weather?",
+	      "expected_chunk_ids": [],
+	      "tags": ["ood"],
+	      "answerability": "ood",
+	      "answerable": false
+	    }
+	  ]
+	}`)
+	request := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/build-publish", body)
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("build publish status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	packageResponse := httptest.NewRecorder()
+	handler.ServeHTTP(packageResponse, httptest.NewRequest("GET", "/kb/yi-flow-core/versions/2026.06.26.prompts/knowledge-pack.zip", nil))
+	if packageResponse.Code != http.StatusOK {
+		t.Fatalf("package status=%d body=%s", packageResponse.Code, packageResponse.Body.String())
+	}
+	promptsJSON := readZipEntry(t, packageResponse.Body.Bytes(), "prompts.json")
+	if !bytes.Contains(promptsJSON, []byte(`"expected_chunk_ids": [`)) ||
+		!bytes.Contains(promptsJSON, []byte(`"answerability": "ood"`)) ||
+		!bytes.Contains(promptsJSON, []byte(`"answerable": false`)) {
+		t.Fatalf("prompts.json missing prompt metadata: %s", string(promptsJSON))
+	}
+}
+
 func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -1670,6 +1908,11 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 		"License",
 		"Source policy",
 		"审计 source metadata",
+		"Prompts / golden questions",
+		"Expected chunk IDs",
+		"Answerability",
+		"创建 prompt",
+		"运行 prompt 预览",
 	} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
 			t.Fatalf("admin page missing chunk editor control %q", expected)

@@ -71,6 +71,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAdminPage(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/source-audit"):
 		h.handleDraftSourceAudit(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.Contains(r.URL.Path, "/prompts/") && strings.HasSuffix(r.URL.Path, "/preview"):
+		h.handleDraftPromptPreview(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/prompts"):
+		h.handleListDraftPrompts(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/prompts"):
+		h.handleCreateDraftPrompt(w, r)
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.Contains(r.URL.Path, "/prompts/"):
+		h.handleUpdateDraftPrompt(w, r)
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.Contains(r.URL.Path, "/prompts/"):
+		h.handleDeleteDraftPrompt(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/chunks"):
 		h.handleListDraftChunks(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/chunks"):
@@ -312,6 +322,27 @@ const adminPageHTML = `<!doctype html>
     <button id="auditDraftSources" class="secondary" type="button">审计 source metadata</button>
     <p id="draftStatus" class="muted">Draft workspace status: not saved</p>
     <div id="draftChunks" class="chunk-list"></div>
+    <h3>Prompts / golden questions</h3>
+    <div class="grid">
+      <label>Prompt ID <input id="draftPromptID" placeholder="prompt-alpha"></label>
+      <label>Prompt title <input id="draftPromptTitle" placeholder="Alpha golden"></label>
+      <label>Expected chunk IDs <input id="draftPromptExpectedChunkIDs" placeholder="alpha,beta"></label>
+      <label>Prompt tags <input id="draftPromptTags" placeholder="golden, smoke"></label>
+      <label>Answerability
+        <select id="draftPromptAnswerability">
+          <option value="answerable">answerable</option>
+          <option value="refusal">refusal</option>
+          <option value="ood">ood</option>
+        </select>
+      </label>
+    </div>
+    <label>Question <textarea id="draftPromptQuestion" spellcheck="false" placeholder="这里写 golden question / refusal / OOD 问题。"></textarea></label>
+    <button id="createDraftPrompt" type="button">创建 prompt</button>
+    <button id="updateDraftPrompt" class="secondary" type="button">更新 prompt</button>
+    <button id="deleteDraftPrompt" class="secondary" type="button">删除 prompt</button>
+    <button id="listDraftPrompts" class="secondary" type="button">列出 prompts</button>
+    <button id="previewDraftPrompt" class="secondary" type="button">运行 prompt 预览</button>
+    <div id="draftPrompts" class="chunk-list"></div>
     <p id="weknoraStatus" class="muted">Chunk Studio status: direction locked; draft editor is tracked in #42/#43.</p>
     <div class="grid">
       <p class="muted">最近导出版本：<strong id="lastWeKnoraExportVersion">-</strong></p>
@@ -423,10 +454,12 @@ const lastWeKnoraExportVersion = document.querySelector("#lastWeKnoraExportVersi
 const lastWeKnoraQualityGate = document.querySelector("#lastWeKnoraQualityGate");
 const draftStatus = document.querySelector("#draftStatus");
 const draftChunksList = document.querySelector("#draftChunks");
+const draftPromptsList = document.querySelector("#draftPrompts");
 const servicePrefix = location.pathname.includes("/admin") ? location.pathname.split("/admin")[0] : "";
 let lastPreview = null;
 let lastWeKnoraDryRun = null;
 let selectedDraftChunkID = "";
+let selectedDraftPromptID = "";
 let draftDirty = false;
 tokenInput.value = localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
 const defaultChunks = [
@@ -483,6 +516,10 @@ document.querySelector("#saveToken").onclick = () => {
   output.textContent = "token saved locally";
 };
 for (const selector of ["#draftChunkID", "#draftChunkTitle", "#draftChunkPath", "#draftChunkSource", "#draftChunkTags", "#draftChunkReviewStatus", "#draftCitationURL", "#draftCitationTitle", "#draftSourceName", "#draftLicense", "#draftSourcePolicy", "#draftSourceRevisionID", "#draftSourcePageID", "#draftChunkContent"]) {
+  document.querySelector(selector).addEventListener("input", markDraftDirty);
+  document.querySelector(selector).addEventListener("change", markDraftDirty);
+}
+for (const selector of ["#draftPromptID", "#draftPromptTitle", "#draftPromptExpectedChunkIDs", "#draftPromptTags", "#draftPromptAnswerability", "#draftPromptQuestion"]) {
   document.querySelector(selector).addEventListener("input", markDraftDirty);
   document.querySelector(selector).addEventListener("change", markDraftDirty);
 }
@@ -587,8 +624,20 @@ function draftChunkPayloadFromForm() {
 function draftPayloadFromForm() {
   return {
     chunks: [draftChunkPayloadFromForm()],
-    prompts: [],
+    prompts: draftPromptPayloadFromForm().id ? [draftPromptPayloadFromForm()] : [],
     citations: defaultCitations
+  };
+}
+function draftPromptPayloadFromForm() {
+  const answerability = document.querySelector("#draftPromptAnswerability").value.trim() || "answerable";
+  return {
+    id: document.querySelector("#draftPromptID").value.trim(),
+    title: document.querySelector("#draftPromptTitle").value.trim(),
+    question: document.querySelector("#draftPromptQuestion").value.trim(),
+    expected_chunk_ids: document.querySelector("#draftPromptExpectedChunkIDs").value.split(",").map((item) => item.trim()).filter(Boolean),
+    tags: document.querySelector("#draftPromptTags").value.split(",").map((item) => item.trim()).filter(Boolean),
+    answerability,
+    answerable: answerability === "answerable"
   };
 }
 function fillDraftFromChunk(chunk) {
@@ -608,6 +657,16 @@ function fillDraftFromChunk(chunk) {
   document.querySelector("#draftSourcePageID").value = chunk.source_page_id || "";
   document.querySelector("#draftChunkContent").value = chunk.content || "";
   setDraftClean("Draft workspace status: selected · " + selectedDraftChunkID);
+}
+function fillDraftFromPrompt(prompt) {
+  selectedDraftPromptID = prompt.id || "";
+  document.querySelector("#draftPromptID").value = prompt.id || "";
+  document.querySelector("#draftPromptTitle").value = prompt.title || "";
+  document.querySelector("#draftPromptQuestion").value = prompt.question || prompt.text || "";
+  document.querySelector("#draftPromptExpectedChunkIDs").value = (prompt.expected_chunk_ids || []).join(", ");
+  document.querySelector("#draftPromptTags").value = (prompt.tags || []).join(", ");
+  document.querySelector("#draftPromptAnswerability").value = prompt.answerability || (prompt.answerable === false ? "refusal" : "answerable");
+  setDraftClean("Draft workspace status: selected prompt · " + selectedDraftPromptID);
 }
 function markDraftDirty() {
   draftDirty = true;
@@ -682,7 +741,9 @@ document.querySelector("#loadDraft").onclick = async () => {
   const decoded = JSON.parse(text);
   document.querySelector("#draftVersion").value = decoded.version;
   if ((decoded.chunks || [])[0]) fillDraftFromChunk(decoded.chunks[0]);
+  if ((decoded.prompts || [])[0]) fillDraftFromPrompt(decoded.prompts[0]);
   renderDraftChunkList(decoded.chunks || [], (decoded.chunks || []).length, (decoded.chunks || []).length);
+  renderDraftPromptList(decoded.prompts || [], (decoded.prompts || []).length);
   setDraftClean("Draft workspace status: loaded · " + decoded.version + " · " + (decoded.chunks || []).length + " chunks");
 };
 document.querySelector("#previewDraft").onclick = async () => {
@@ -808,6 +869,85 @@ document.querySelector("#auditDraftSources").onclick = async () => {
   const decoded = JSON.parse(text);
   const violations = (decoded.violations || []).length;
   draftStatus.textContent = "Draft workspace status: source audit · " + violations + " violations";
+};
+document.querySelector("#createDraftPrompt").onclick = async () => {
+  const payload = draftPromptPayloadFromForm();
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/prompts", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: create prompt failed";
+    return;
+  }
+  selectedDraftPromptID = payload.id;
+  setDraftClean("Draft workspace status: prompt created · " + selectedDraftPromptID);
+  await loadDraftPromptList();
+};
+document.querySelector("#updateDraftPrompt").onclick = async () => {
+  const originalID = selectedDraftPromptID || document.querySelector("#draftPromptID").value.trim();
+  if (!originalID) {
+    output.textContent = "请选择或输入要更新的 prompt id。";
+    return;
+  }
+  const payload = draftPromptPayloadFromForm();
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/prompts/" + encodeURIComponent(originalID), {
+    method: "PUT",
+    headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: update prompt failed";
+    return;
+  }
+  selectedDraftPromptID = payload.id;
+  setDraftClean("Draft workspace status: prompt updated · " + selectedDraftPromptID);
+  await loadDraftPromptList();
+};
+document.querySelector("#deleteDraftPrompt").onclick = async () => {
+  const promptID = selectedDraftPromptID || document.querySelector("#draftPromptID").value.trim();
+  if (!promptID) {
+    output.textContent = "请选择或输入要删除的 prompt id。";
+    return;
+  }
+  if (!window.confirm("删除 prompt：" + promptID + "？")) return;
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/prompts/" + encodeURIComponent(promptID), {
+    method: "DELETE",
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: delete prompt failed";
+    return;
+  }
+  selectedDraftPromptID = "";
+  setDraftClean("Draft workspace status: prompt deleted · " + promptID);
+  await loadDraftPromptList();
+};
+document.querySelector("#listDraftPrompts").onclick = async () => {
+  await loadDraftPromptList();
+};
+document.querySelector("#previewDraftPrompt").onclick = async () => {
+  const promptID = selectedDraftPromptID || document.querySelector("#draftPromptID").value.trim();
+  if (!promptID) {
+    output.textContent = "请选择或输入要预览的 prompt id。";
+    return;
+  }
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/prompts/" + encodeURIComponent(promptID) + "/preview", {
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: prompt preview failed";
+    return;
+  }
+  const decoded = JSON.parse(text);
+  renderPreview({ kb_id: decoded.kb_id, version: decoded.version, chunks: decoded.chunks || [] });
+  document.querySelector("#ragQuery").value = (decoded.prompt || {}).question || "";
+  draftStatus.textContent = "Draft workspace status: prompt preview · " + promptID;
 };
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {
@@ -1070,6 +1210,69 @@ function renderDraftListChunk(chunk) {
     fillDraftFromChunk(chunk);
   };
   card.append(edit);
+  return card;
+}
+async function loadDraftPromptList() {
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/prompts", {
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await response.text();
+  output.textContent = response.status + "\n" + text;
+  if (!response.ok) {
+    draftPromptsList.replaceChildren();
+    draftStatus.textContent = "Draft workspace status: prompt list failed";
+    return;
+  }
+  const decoded = JSON.parse(text);
+  renderDraftPromptList(decoded.prompts || [], decoded.total || 0);
+  draftStatus.textContent = "Draft workspace status: prompts listed · " + decoded.total;
+}
+function renderDraftPromptList(prompts, total) {
+  draftPromptsList.replaceChildren(...prompts.map(renderDraftPromptCard));
+  if (prompts.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "No prompts · " + total;
+    draftPromptsList.append(empty);
+  }
+}
+function renderDraftPromptCard(prompt) {
+  const card = document.createElement("article");
+  card.className = "chunk-card";
+
+  const title = document.createElement("h3");
+  title.textContent = prompt.title || prompt.id;
+  card.append(title);
+
+  const meta = document.createElement("div");
+  meta.className = "chunk-meta";
+  meta.textContent = [prompt.id, prompt.answerability || (prompt.answerable === false ? "refusal" : "answerable"), (prompt.expected_chunk_ids || []).join(", "), (prompt.tags || []).join(", ")].filter(Boolean).join(" · ");
+  card.append(meta);
+
+  const question = document.createElement("p");
+  question.className = "chunk-content";
+  question.textContent = prompt.question || prompt.text || "";
+  card.append(question);
+
+  const edit = document.createElement("button");
+  edit.className = "copy";
+  edit.type = "button";
+  edit.textContent = "编辑";
+  edit.onclick = () => {
+    if (!confirmDiscardDraftChanges()) return;
+    fillDraftFromPrompt(prompt);
+  };
+  card.append(edit);
+
+  const preview = document.createElement("button");
+  preview.className = "copy";
+  preview.type = "button";
+  preview.textContent = "预览";
+  preview.onclick = async () => {
+    fillDraftFromPrompt(prompt);
+    document.querySelector("#previewDraftPrompt").click();
+  };
+  card.append(preview);
   return card;
 }
 function renderPreview(preview) {

@@ -53,10 +53,14 @@ type knowledgePackBuildChunk struct {
 }
 
 type knowledgePackBuildPrompt struct {
-	ID       string `json:"id,omitempty"`
-	Title    string `json:"title,omitempty"`
-	Question string `json:"question,omitempty"`
-	Text     string `json:"text,omitempty"`
+	ID               string   `json:"id,omitempty"`
+	Title            string   `json:"title,omitempty"`
+	Question         string   `json:"question,omitempty"`
+	Text             string   `json:"text,omitempty"`
+	ExpectedChunkIDs []string `json:"expected_chunk_ids,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	Answerability    string   `json:"answerability,omitempty"`
+	Answerable       bool     `json:"answerable"`
 }
 
 type knowledgePackBuildFile struct {
@@ -189,7 +193,11 @@ func buildKnowledgePack(
 		return nil, nil, fmt.Errorf("read chunks sqlite: %w", err)
 	}
 
-	promptsData, err := json.MarshalIndent(map[string]any{"prompts": payload.Prompts}, "", "  ")
+	prompts, err := normalizeBuildPrompts(chunks, payload.Prompts, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	promptsData, err := json.MarshalIndent(map[string]any{"prompts": prompts}, "", "  ")
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode prompts: %w", err)
 	}
@@ -269,6 +277,66 @@ func normalizeStringList(values []string) []string {
 		normalized = append(normalized, value)
 	}
 	return normalized
+}
+
+func normalizeBuildPrompts(chunks []knowledgePackBuildChunk, prompts []knowledgePackBuildPrompt, requireID bool) ([]knowledgePackBuildPrompt, error) {
+	chunkIDs := map[string]bool{}
+	for _, chunk := range chunks {
+		chunkIDs[chunk.ChunkID] = true
+	}
+	normalized := make([]knowledgePackBuildPrompt, len(prompts))
+	seen := map[string]bool{}
+	for index, prompt := range prompts {
+		prompt.ID = strings.TrimSpace(prompt.ID)
+		prompt.Title = strings.TrimSpace(prompt.Title)
+		prompt.Question = strings.TrimSpace(prompt.Question)
+		prompt.Text = strings.TrimSpace(prompt.Text)
+		if prompt.Question == "" {
+			prompt.Question = prompt.Text
+		}
+		prompt.ExpectedChunkIDs = normalizeStringList(prompt.ExpectedChunkIDs)
+		prompt.Tags = normalizeStringList(prompt.Tags)
+		prompt.Answerability = normalizeAnswerability(prompt.Answerability)
+		prompt.Answerable = prompt.Answerability == "answerable"
+
+		if requireID && prompt.ID == "" {
+			return nil, fmt.Errorf("prompts[%d].id is required", index)
+		}
+		if prompt.ID != "" {
+			if seen[prompt.ID] {
+				return nil, fmt.Errorf("duplicate prompt id: %s", prompt.ID)
+			}
+			seen[prompt.ID] = true
+		}
+		if requireID && prompt.Title == "" {
+			return nil, fmt.Errorf("prompts[%d].title is required", index)
+		}
+		if prompt.Question == "" {
+			return nil, fmt.Errorf("prompts[%d].question is required", index)
+		}
+		for _, expectedChunkID := range prompt.ExpectedChunkIDs {
+			if !chunkIDs[expectedChunkID] {
+				return nil, fmt.Errorf("prompts[%d].expected_chunk_ids references unknown chunk_id %s", index, expectedChunkID)
+			}
+		}
+		normalized[index] = prompt
+	}
+	return normalized, nil
+}
+
+func normalizeAnswerability(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "", "answerable":
+		return "answerable"
+	case "refusal", "ood", "out_of_domain":
+		if value == "out_of_domain" {
+			return "ood"
+		}
+		return value
+	default:
+		return "answerable"
+	}
 }
 
 func writeChunksSQLite(path string, chunks []knowledgePackBuildChunk) error {

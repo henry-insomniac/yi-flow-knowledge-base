@@ -456,6 +456,212 @@ func (h *Handler) handleDeleteDraftChunk(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func (h *Handler) handleListDraftPrompts(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	kbID, version, ok, err := parseAdminDraftPromptCollectionPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	draft, err := h.readDraft(kbID, version)
+	if err != nil {
+		writeDraftReadError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kb_id":   draft.KBID,
+		"version": draft.Version,
+		"status":  draft.Status,
+		"total":   len(draft.Prompts),
+		"prompts": draft.Prompts,
+	})
+}
+
+func (h *Handler) handleCreateDraftPrompt(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	kbID, version, ok, err := parseAdminDraftPromptCollectionPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	prompt, err := decodeDraftPrompt(w, r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	draft, err := h.readDraft(kbID, version)
+	if err != nil {
+		writeDraftReadError(w, r, err)
+		return
+	}
+	prompt, err = normalizeDraftPrompt(draft, prompt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if _, exists := findDraftPromptIndex(draft.Prompts, prompt.ID); exists {
+		http.Error(w, "duplicate prompt id: "+prompt.ID, http.StatusConflict)
+		return
+	}
+	draft.Prompts = append(draft.Prompts, prompt)
+	draft.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := h.writeDraft(draft); err != nil {
+		http.Error(w, "write draft failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"kb_id":        draft.KBID,
+		"version":      draft.Version,
+		"status":       draft.Status,
+		"prompt_count": len(draft.Prompts),
+		"prompt":       prompt,
+	})
+}
+
+func (h *Handler) handleUpdateDraftPrompt(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	kbID, version, promptID, ok, err := parseAdminDraftPromptItemPath(r.URL.Path, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	prompt, err := decodeDraftPrompt(w, r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	draft, err := h.readDraft(kbID, version)
+	if err != nil {
+		writeDraftReadError(w, r, err)
+		return
+	}
+	index, exists := findDraftPromptIndex(draft.Prompts, promptID)
+	if !exists {
+		http.Error(w, "draft prompt not found", http.StatusNotFound)
+		return
+	}
+	prompt, err = normalizeDraftPrompt(draft, prompt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if prompt.ID != promptID {
+		if _, duplicate := findDraftPromptIndex(draft.Prompts, prompt.ID); duplicate {
+			http.Error(w, "duplicate prompt id: "+prompt.ID, http.StatusConflict)
+			return
+		}
+	}
+	draft.Prompts[index] = prompt
+	draft.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := h.writeDraft(draft); err != nil {
+		http.Error(w, "write draft failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kb_id":        draft.KBID,
+		"version":      draft.Version,
+		"status":       draft.Status,
+		"prompt_count": len(draft.Prompts),
+		"prompt":       prompt,
+	})
+}
+
+func (h *Handler) handleDeleteDraftPrompt(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	kbID, version, promptID, ok, err := parseAdminDraftPromptItemPath(r.URL.Path, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	draft, err := h.readDraft(kbID, version)
+	if err != nil {
+		writeDraftReadError(w, r, err)
+		return
+	}
+	index, exists := findDraftPromptIndex(draft.Prompts, promptID)
+	if !exists {
+		http.Error(w, "draft prompt not found", http.StatusNotFound)
+		return
+	}
+	deleted := draft.Prompts[index].ID
+	draft.Prompts = append(draft.Prompts[:index], draft.Prompts[index+1:]...)
+	draft.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := h.writeDraft(draft); err != nil {
+		http.Error(w, "write draft failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kb_id":        draft.KBID,
+		"version":      draft.Version,
+		"status":       draft.Status,
+		"prompt_count": len(draft.Prompts),
+		"deleted":      deleted,
+	})
+}
+
+func (h *Handler) handleDraftPromptPreview(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	kbID, version, promptID, ok, err := parseAdminDraftPromptItemPath(r.URL.Path, "/preview")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	draft, err := h.readDraft(kbID, version)
+	if err != nil {
+		writeDraftReadError(w, r, err)
+		return
+	}
+	index, exists := findDraftPromptIndex(draft.Prompts, promptID)
+	if !exists {
+		http.Error(w, "draft prompt not found", http.StatusNotFound)
+		return
+	}
+	prompt := draft.Prompts[index]
+	chunks := previewChunksForExpectedIDs(draft.Chunks, prompt.ExpectedChunkIDs)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kb_id":   draft.KBID,
+		"version": draft.Version,
+		"status":  draft.Status,
+		"prompt":  prompt,
+		"chunks":  chunks,
+	})
+}
+
 func (h *Handler) buildDraftDocument(kbID string, version string, payload draftSaveRequest) (draftDocument, error) {
 	if len(payload.Chunks) == 0 {
 		return draftDocument{}, fmt.Errorf("chunks must not be empty")
@@ -466,6 +672,10 @@ func (h *Handler) buildDraftDocument(kbID string, version string, payload draftS
 		return draftDocument{}, err
 	}
 	if err := validateChunkSourceMetadata(kbID, chunks); err != nil {
+		return draftDocument{}, err
+	}
+	prompts, err := normalizeBuildPrompts(chunks, payload.Prompts, true)
+	if err != nil {
 		return draftDocument{}, err
 	}
 
@@ -487,7 +697,7 @@ func (h *Handler) buildDraftDocument(kbID string, version string, payload draftS
 		Version:   version,
 		Status:    draftStatus,
 		Chunks:    chunks,
-		Prompts:   payload.Prompts,
+		Prompts:   prompts,
 		Citations: json.RawMessage(citations),
 		CreatedAt: createdAt,
 		UpdatedAt: now,
@@ -619,12 +829,85 @@ func parseAdminDraftChunksPath(urlPath string) (string, string, string, bool, er
 	return safeKBID, safeVersion, tail, true, nil
 }
 
+func parseAdminDraftPromptCollectionPath(urlPath string) (string, string, bool, error) {
+	kbID, version, tail, ok, err := parseAdminDraftPromptsPath(urlPath)
+	if err != nil || !ok {
+		return "", "", ok, err
+	}
+	if tail != "" {
+		return "", "", false, nil
+	}
+	return kbID, version, true, nil
+}
+
+func parseAdminDraftPromptItemPath(urlPath string, suffix string) (string, string, string, bool, error) {
+	kbID, version, tail, ok, err := parseAdminDraftPromptsPath(urlPath)
+	if err != nil || !ok {
+		return "", "", "", ok, err
+	}
+	if suffix != "" {
+		var hasSuffix bool
+		tail, hasSuffix = strings.CutSuffix(tail, suffix)
+		if !hasSuffix {
+			return "", "", "", false, nil
+		}
+	}
+	if !strings.HasPrefix(tail, "/") {
+		return "", "", "", false, nil
+	}
+	promptID := strings.TrimPrefix(tail, "/")
+	if promptID == "" || strings.Contains(promptID, "/") || strings.Contains(promptID, `\`) {
+		return "", "", "", false, nil
+	}
+	return kbID, version, promptID, true, nil
+}
+
+func parseAdminDraftPromptsPath(urlPath string) (string, string, string, bool, error) {
+	rest, ok := strings.CutPrefix(urlPath, "/admin/api/kb/")
+	if !ok {
+		return "", "", "", false, nil
+	}
+	kbID, rest, ok := strings.Cut(rest, "/drafts/")
+	if !ok {
+		return "", "", "", false, nil
+	}
+	version, tail, ok := strings.Cut(rest, "/prompts")
+	if !ok {
+		return "", "", "", false, nil
+	}
+	safeKBID, err := safeComponent(kbID)
+	if err != nil {
+		return "", "", "", true, err
+	}
+	safeVersion, err := safeComponent(version)
+	if err != nil {
+		return "", "", "", true, err
+	}
+	return safeKBID, safeVersion, tail, true, nil
+}
+
 func decodeDraftChunk(w http.ResponseWriter, r *http.Request) (knowledgePackBuildChunk, error) {
 	var chunk knowledgePackBuildChunk
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&chunk); err != nil {
 		return knowledgePackBuildChunk{}, fmt.Errorf("invalid json body")
 	}
 	return normalizeBuildChunk(0, chunk)
+}
+
+func decodeDraftPrompt(w http.ResponseWriter, r *http.Request) (knowledgePackBuildPrompt, error) {
+	var prompt knowledgePackBuildPrompt
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(&prompt); err != nil {
+		return knowledgePackBuildPrompt{}, fmt.Errorf("invalid json body")
+	}
+	return prompt, nil
+}
+
+func normalizeDraftPrompt(draft draftDocument, prompt knowledgePackBuildPrompt) (knowledgePackBuildPrompt, error) {
+	prompts, err := normalizeBuildPrompts(draft.Chunks, []knowledgePackBuildPrompt{prompt}, true)
+	if err != nil {
+		return knowledgePackBuildPrompt{}, err
+	}
+	return prompts[0], nil
 }
 
 func normalizeDraftChunks(chunks []knowledgePackBuildChunk) ([]knowledgePackBuildChunk, error) {
@@ -685,6 +968,43 @@ func findDraftChunkIndex(chunks []knowledgePackBuildChunk, chunkID string) (int,
 		}
 	}
 	return -1, false
+}
+
+func findDraftPromptIndex(prompts []knowledgePackBuildPrompt, promptID string) (int, bool) {
+	for index, prompt := range prompts {
+		if prompt.ID == promptID {
+			return index, true
+		}
+	}
+	return -1, false
+}
+
+func previewChunksForExpectedIDs(chunks []knowledgePackBuildChunk, expectedIDs []string) []knowledgePackPreviewChunk {
+	result := make([]knowledgePackPreviewChunk, 0, len(expectedIDs))
+	for _, expectedID := range expectedIDs {
+		for _, chunk := range chunks {
+			if chunk.ChunkID != expectedID {
+				continue
+			}
+			result = append(result, knowledgePackPreviewChunk{
+				ChunkID:            chunk.ChunkID,
+				Title:              chunk.Title,
+				Path:               chunk.Path,
+				Source:             chunk.Source,
+				SourceURL:          chunk.CitationURL,
+				CitationTitle:      chunk.CitationTitle,
+				SourceName:         chunk.SourceName,
+				License:            chunk.License,
+				SourcePolicy:       chunk.SourcePolicy,
+				RevisionID:         chunk.SourceRevisionID,
+				SourcePageID:       chunk.SourcePageID,
+				Content:            truncateRunes(strings.TrimSpace(chunk.Content), maxPreviewContentRunes),
+				SuggestedQuestions: []string{},
+			})
+			break
+		}
+	}
+	return result
 }
 
 func nextDraftChunkCopyID(chunks []knowledgePackBuildChunk, chunkID string) string {
