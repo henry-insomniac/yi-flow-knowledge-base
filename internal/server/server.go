@@ -389,6 +389,9 @@ const adminPageHTML = `<!doctype html>
       --color-primary-active: #e00b41;
       --color-primary-disabled: #ffd1da;
       --color-error: #c13515;
+      --color-success: #008a63;
+      --color-warning: #b86500;
+      --color-info: #005e9f;
       --color-ink: #222222;
       --color-body: #3f3f3f;
       --color-muted: #6a6a6a;
@@ -397,8 +400,10 @@ const adminPageHTML = `<!doctype html>
       --color-hairline-soft: #ebebeb;
       --color-border-strong: #c1c1c1;
       --color-canvas: #ffffff;
+      --color-page: #f7f7f7;
       --color-surface-soft: #f7f7f7;
       --color-surface-strong: #f2f2f2;
+      --color-panel: #fffdfa;
       --color-on-primary: #ffffff;
       --radius-xs: 4px;
       --radius-sm: 8px;
@@ -407,98 +412,301 @@ const adminPageHTML = `<!doctype html>
       --radius-xl: 32px;
       --radius-full: 9999px;
       --shadow-float: rgba(0, 0, 0, 0.02) 0 0 0 1px, rgba(0, 0, 0, 0.04) 0 2px 6px, rgba(0, 0, 0, 0.1) 0 4px 8px;
+      --shadow-panel: rgba(34, 34, 34, 0.08) 0 1px 2px, rgba(34, 34, 34, 0.08) 0 8px 24px;
       font-family: var(--font-family);
     }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--color-canvas); color: var(--color-ink); font-family: var(--font-family); font-size: 16px; line-height: 1.5; }
-    main { max-width: 1280px; margin: 0 auto; padding: 32px 32px 64px; overflow-x: hidden; }
-    h1 { font-size: 28px; line-height: 1.43; font-weight: 700; letter-spacing: 0; margin: 0 0 4px; }
-    h2 { font-size: 22px; line-height: 1.18; font-weight: 600; letter-spacing: 0; margin: 0 0 16px; }
-    h3 { font-size: 20px; line-height: 1.2; font-weight: 600; letter-spacing: 0; margin: 32px 0 12px; }
-    main > p { margin: 0; color: var(--color-muted); font-size: 14px; }
-    section { min-width: 0; border-top: 1px solid var(--color-hairline-soft); padding: 32px 0; margin-top: 32px; overflow-x: hidden; overflow-wrap: anywhere; }
-    label { display: grid; gap: 8px; margin: 12px 0; color: var(--color-body); font-size: 14px; line-height: 1.29; font-weight: 500; letter-spacing: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--color-page);
+      color: var(--color-ink);
+      font-family: var(--font-family);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    .app-frame {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 24px 20px;
+      background: var(--color-canvas);
+      border-right: 1px solid var(--color-hairline-soft);
+      overflow-y: auto;
+    }
+    .brand-mark {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 24px;
+    }
+    .brand-mark strong {
+      font-size: 22px;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+    .brand-mark span {
+      color: var(--color-muted);
+      font-size: 13px;
+      line-height: 1.23;
+    }
+    .dashboard-nav {
+      display: grid;
+      gap: 6px;
+      align-items: stretch;
+      margin: 0 0 24px;
+      padding: 6px;
+      border: 1px solid var(--color-hairline);
+      border-radius: var(--radius-lg);
+      background: var(--color-surface-soft);
+    }
+    .dashboard-nav a {
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      color: var(--color-ink);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.29;
+    }
+    .dashboard-nav a::after {
+      content: ">";
+      color: var(--color-muted-soft);
+      font-weight: 600;
+    }
+    .dashboard-nav a:hover {
+      background: var(--color-canvas);
+      box-shadow: rgba(34, 34, 34, 0.04) 0 1px 2px;
+    }
+    .sidebar-note {
+      padding: 14px;
+      border: 1px solid var(--color-hairline-soft);
+      border-radius: var(--radius-md);
+      color: var(--color-muted);
+      background: var(--color-panel);
+      font-size: 13px;
+      line-height: 1.38;
+    }
+    main {
+      min-width: 0;
+      max-width: 1500px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 28px clamp(20px, 4vw, 48px) 64px;
+      overflow-x: hidden;
+    }
+    .topbar {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+    .topbar h1 {
+      margin: 0;
+      font-size: clamp(28px, 3.2vw, 44px);
+      line-height: 1.08;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+    .topbar p {
+      margin: 8px 0 0;
+      color: var(--color-muted);
+      font-size: 14px;
+      line-height: 1.43;
+      max-width: 760px;
+    }
+    .topbar-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .status-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    .status-tile {
+      min-width: 0;
+      padding: 16px;
+      border: 1px solid var(--color-hairline-soft);
+      border-radius: var(--radius-md);
+      background: var(--color-canvas);
+    }
+    .status-tile span {
+      display: block;
+      color: var(--color-muted);
+      font-size: 12px;
+      line-height: 1.17;
+      text-transform: uppercase;
+      font-weight: 800;
+    }
+    .status-tile strong {
+      display: block;
+      margin-top: 8px;
+      color: var(--color-ink);
+      font-size: 16px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    h2 {
+      font-size: 24px;
+      line-height: 1.17;
+      font-weight: 800;
+      letter-spacing: 0;
+      margin: 0;
+    }
+    h3 {
+      font-size: 17px;
+      line-height: 1.24;
+      font-weight: 800;
+      letter-spacing: 0;
+      margin: 28px 0 12px;
+    }
+    section {
+      min-width: 0;
+      margin: 0 0 18px;
+      padding: 24px;
+      border: 1px solid var(--color-hairline-soft);
+      border-radius: var(--radius-lg);
+      background: var(--color-canvas);
+      box-shadow: rgba(34, 34, 34, 0.03) 0 1px 1px;
+      overflow-x: hidden;
+      overflow-wrap: anywhere;
+      scroll-margin-top: 24px;
+    }
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+    .section-head p {
+      margin: 8px 0 0;
+      max-width: 820px;
+    }
+    .panel {
+      padding: 18px;
+      border: 1px solid var(--color-hairline-soft);
+      border-radius: var(--radius-md);
+      background: var(--color-panel);
+    }
+    .panel + .panel { margin-top: 16px; }
+    .panel-title {
+      margin: 0 0 8px;
+      font-size: 15px;
+      line-height: 1.27;
+      font-weight: 800;
+    }
+    label {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      color: var(--color-body);
+      font-size: 13px;
+      line-height: 1.29;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
     input, button, textarea, select { font: inherit; letter-spacing: 0; }
     input, textarea, select {
       width: 100%;
-      min-height: 56px;
-      padding: 14px 12px;
+      min-height: 48px;
+      padding: 12px;
       border: 1px solid var(--color-hairline);
       border-radius: var(--radius-sm);
       background: var(--color-canvas);
       color: var(--color-ink);
       outline: none;
     }
-    input:focus, textarea:focus, select:focus { border-color: var(--color-ink); box-shadow: inset 0 0 0 1px var(--color-ink); }
+    input:focus, textarea:focus, select:focus {
+      border-color: var(--color-ink);
+      box-shadow: inset 0 0 0 1px var(--color-ink);
+    }
     input::placeholder, textarea::placeholder { color: var(--color-muted-soft); }
-    textarea { min-height: 144px; resize: vertical; font-family: var(--font-family); font-size: 14px; line-height: 1.43; }
+    textarea {
+      min-height: 132px;
+      resize: vertical;
+      font-family: var(--font-family);
+      font-size: 14px;
+      line-height: 1.43;
+    }
     button {
-      min-height: 48px;
+      min-height: 44px;
       border: 0;
       border-radius: var(--radius-sm);
       background: var(--color-primary);
       color: var(--color-on-primary);
-      padding: 14px 24px;
+      padding: 12px 18px;
       cursor: pointer;
-      font-size: 16px;
-      font-weight: 500;
+      font-size: 14px;
+      font-weight: 800;
       line-height: 1.25;
     }
     button:hover { background: var(--color-primary-active); }
     button:disabled { background: var(--color-primary-disabled); cursor: not-allowed; }
-    button.secondary { background: var(--color-canvas); color: var(--color-ink); border: 1px solid var(--color-ink); }
+    button.secondary {
+      background: var(--color-canvas);
+      color: var(--color-ink);
+      border: 1px solid var(--color-border-strong);
+    }
     button.secondary:hover { background: var(--color-surface-soft); }
     button.copy {
-      min-height: 40px;
+      min-height: 38px;
       border-radius: var(--radius-full);
       background: var(--color-surface-strong);
       color: var(--color-ink);
       border: 1px solid transparent;
       margin: 4px 8px 4px 0;
-      padding: 10px 20px;
-      font-size: 14px;
+      padding: 9px 16px;
+      font-size: 13px;
     }
     button.copy:hover { border-color: var(--color-hairline); background: var(--color-canvas); }
-    pre { white-space: pre-wrap; word-break: break-word; background: var(--color-surface-soft); color: var(--color-body); padding: 16px; border: 1px solid var(--color-hairline-soft); border-radius: var(--radius-md); min-height: 80px; font-size: 13px; line-height: 1.43; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; align-items: start; }
-    .grid > *, .compare-grid > *, .chunk-list > * { min-width: 0; }
-    .muted { color: var(--color-muted); }
-    .dashboard-nav {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-      margin-top: 24px;
-      padding: 8px;
-      border: 1px solid var(--color-hairline);
-      border-radius: var(--radius-full);
-      background: var(--color-canvas);
-    }
-    .dashboard-nav a {
-      min-height: 40px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 10px 18px;
-      border-radius: var(--radius-full);
-      color: var(--color-ink);
-      text-decoration: none;
-      font-size: 14px;
-      font-weight: 600;
-      line-height: 1.29;
-    }
-    .dashboard-nav a:hover { background: var(--color-surface-soft); }
-    .dashboard-anchor { scroll-margin-top: 24px; margin-top: 32px; padding-top: 1px; }
-    .dashboard-category-label {
-      margin: 32px 0 8px;
-      color: var(--color-primary-active);
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--color-surface-soft);
+      color: var(--color-body);
+      padding: 16px;
+      border: 1px solid var(--color-hairline-soft);
+      border-radius: var(--radius-md);
+      min-height: 80px;
       font-size: 13px;
-      font-weight: 700;
-      line-height: 1.23;
+      line-height: 1.43;
+    }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; align-items: start; }
+    .grid.tight { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
+    .muted { color: var(--color-muted); }
+    .workbench-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(340px, 0.9fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .dashboard-anchor { scroll-margin-top: 24px; margin-top: 28px; padding-top: 1px; }
+    .dashboard-category-label {
+      margin: 0 0 12px;
+      color: var(--color-primary-active);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.17;
       text-transform: uppercase;
     }
     .advanced-panel {
-      margin: 16px 0;
+      margin: 16px 0 0;
       padding: 16px;
       border: 1px solid var(--color-hairline);
       border-radius: var(--radius-md);
@@ -507,21 +715,26 @@ const adminPageHTML = `<!doctype html>
     .advanced-panel summary {
       cursor: pointer;
       color: var(--color-ink);
-      font-size: 16px;
-      font-weight: 600;
+      font-size: 15px;
+      font-weight: 800;
       line-height: 1.25;
     }
     .advanced-panel[open] summary { margin-bottom: 12px; }
-    .chunk-list { display: grid; gap: 16px; margin-top: 16px; }
-    .chunk-card { border: 1px solid var(--color-hairline); border-radius: var(--radius-md); padding: 16px; background: var(--color-canvas); }
+    .chunk-list { display: grid; gap: 12px; margin-top: 16px; }
+    .chunk-card {
+      border: 1px solid var(--color-hairline);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      background: var(--color-canvas);
+    }
     .chunk-card:hover { box-shadow: var(--shadow-float); }
-    .chunk-card h3 { margin: 0 0 6px; font-size: 16px; line-height: 1.25; font-weight: 600; }
+    .chunk-card h3 { margin: 0 0 6px; font-size: 16px; line-height: 1.25; font-weight: 800; }
     .chunk-meta { color: var(--color-muted); font-size: 13px; line-height: 1.23; margin-bottom: 8px; }
     .chunk-content { color: var(--color-body); line-height: 1.5; margin: 8px 0 10px; }
     .question-row { display: flex; flex-wrap: wrap; gap: 8px; }
     .compare-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px; }
     .compare-column { border: 1px solid var(--color-hairline); border-radius: var(--radius-md); padding: 16px; background: var(--color-canvas); }
-    .compare-status { font-weight: 600; margin: 0 0 10px; }
+    .compare-status { font-weight: 800; margin: 0 0 10px; }
     .pager {
       display: flex;
       flex-wrap: wrap;
@@ -534,190 +747,286 @@ const adminPageHTML = `<!doctype html>
       background: var(--color-canvas);
     }
     .pager button { min-width: 112px; border-radius: var(--radius-full); }
-    #draftStatus, #draftChunkPageStatus { font-size: 14px; line-height: 1.29; }
+    .dashboard-note {
+      border-left: 3px solid var(--color-primary);
+      padding: 12px 14px;
+      color: var(--color-body);
+      background: var(--color-surface-soft);
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+    }
+    #draftStatus, #draftChunkPageStatus, #authStatus { font-size: 14px; line-height: 1.29; }
+    @media (max-width: 980px) {
+      .app-frame { grid-template-columns: 1fr; }
+      .sidebar {
+        position: static;
+        height: auto;
+        padding: 16px;
+        border-right: 0;
+        border-bottom: 1px solid var(--color-hairline-soft);
+      }
+      .dashboard-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .workbench-layout { grid-template-columns: 1fr; }
+      .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
     @media (max-width: 720px) {
-      main { padding: 24px 16px 48px; }
-      h1 { font-size: 26px; }
-      section { padding: 24px 0; margin-top: 24px; }
-      .grid, .compare-grid { grid-template-columns: 1fr; }
-      .dashboard-nav { border-radius: var(--radius-lg); }
-      .dashboard-nav a { flex: 1 1 112px; }
+      main { padding: 20px 14px 48px; }
+      .topbar { display: grid; }
+      .topbar-actions { justify-content: stretch; }
+      .dashboard-nav { grid-template-columns: 1fr 1fr; border-radius: var(--radius-lg); }
+      .dashboard-nav a { min-height: 44px; }
+      section { padding: 18px; border-radius: var(--radius-md); }
+      .grid, .compare-grid, .status-strip { grid-template-columns: 1fr; }
       button { width: 100%; }
+      .actions button { width: auto; flex: 1 1 180px; }
       .pager button { width: auto; flex: 1 1 120px; }
     }
   </style>
 </head>
 <body>
-<main>
-  <h1>Knowledge Pack Admin</h1>
-  <p>发布、查看和回滚 yi-flow Knowledge Pack。管理操作需要先使用 yi-flow 账号登录。</p>
-  <nav id="dashboardCategoryNav" class="dashboard-nav" aria-label="Knowledge pack dashboard categories">
-    <a href="#dashboard-config">Catalog</a>
-    <a href="#dashboard-create">Create</a>
-    <a href="#dashboard-review">Review</a>
-    <a href="#dashboard-ship">Ship</a>
-    <a href="#dashboard-inspect">Inspect</a>
-    <a href="#dashboard-operate">Operate</a>
-  </nav>
+<div class="app-frame">
+  <aside class="sidebar">
+    <div class="brand-mark">
+      <strong>yi-flow</strong>
+      <span>Knowledge Pack Admin</span>
+    </div>
+    <nav id="dashboardCategoryNav" class="dashboard-nav" aria-label="Knowledge pack dashboard categories">
+      <a href="#dashboard-config">Catalog</a>
+      <a href="#dashboard-create">Create</a>
+      <a href="#dashboard-review">Review</a>
+      <a href="#dashboard-ship">Ship</a>
+      <a href="#dashboard-inspect">Inspect</a>
+      <a href="#dashboard-operate">Operate</a>
+    </nav>
+    <div class="sidebar-note">自研 chunk 内容创建和管理后台。先写 draft，再跑 review、retrieval preview、quality gates，最后发布 signed package。</div>
+  </aside>
 
-  <section id="dashboard-config" data-dashboard-category="catalog">
-    <h2>统一登录</h2>
-    <p class="muted">使用 yi-flow 账号登录后再创建、审核、发布或回滚知识包。登录由 auth-service 处理，本页面只保存服务端会话。</p>
-    <div class="grid">
-      <label>Knowledge base ID <input id="kbID" value="yi-flow-core"></label>
-    </div>
-    <button id="loginAdmin" type="button">使用 yi-flow 账号登录</button>
-    <button id="logoutAdmin" class="secondary" type="button">退出登录</button>
-    <p id="authStatus" class="muted">正在检查登录状态。</p>
-  </section>
-
-  <section id="dashboard-create" data-dashboard-category="create">
-    <h2>Chunk Studio</h2>
-    <p class="muted">自研 chunk 内容创建和管理后台。后续 draft、chunk 编辑、citation、prompts、retrieval preview、quality gates、dry-run、publish 和 rollback 都在这里完成；外部 RAG/知识库项目只作为交互参考，不作为 chunk authoring 后台。</p>
-    <div class="grid">
-      <p class="muted"><strong>Draft workspace</strong><br>创建知识包草稿，保存未发布 chunks，先预览再发布。</p>
-      <p class="muted"><strong>Chunk editor</strong><br>编辑 title、path、source、content、citation、license、source policy 和 review status。</p>
-      <p class="muted"><strong>Quality gates</strong><br>发布前检查缺字段、重复、污染、citation 覆盖和 golden eval。</p>
-      <p class="muted"><strong>Signed package</strong><br>继续生成 manifest.json、knowledge-pack.zip、chunks.sqlite、citations.json 和 prompts.json。</p>
-    </div>
-    <h3>Create chunk</h3>
-    <p class="muted">Basic chunk fields：先填写草稿版本、标题和正文；系统会在创建时 auto-filled chunk_id/path/source，高级元数据仍可手动覆盖。</p>
-    <div class="grid">
-      <label>Draft version <input id="draftVersion" placeholder="2026.06.26.draft"></label>
-      <label>Title <input id="draftChunkTitle" placeholder="知识点标题"></label>
-    </div>
-    <label>Content <textarea id="draftChunkContent" spellcheck="false" placeholder="这里写 chunk 内容。保存后会进入草稿预览，但不会修改 latest。"></textarea></label>
-    <details class="advanced-panel">
-      <summary>Advanced metadata</summary>
-      <p class="muted">留空时创建流程会自动生成 chunk_id、path 和 source；需要迁移旧 chunk 或保持外部引用时再手动填写。</p>
-      <div class="grid">
-        <label>Chunk ID <input id="draftChunkID" placeholder="draft-topic-001"></label>
-        <label>Path <input id="draftChunkPath" placeholder="topic/category/name"></label>
-        <label>Source <input id="draftChunkSource" placeholder="manual"></label>
-        <label>Tags <input id="draftChunkTags" placeholder="core, faq, agent"></label>
-        <label>Review status
-          <select id="draftChunkReviewStatus">
-            <option value="draft">draft</option>
-            <option value="needs_review">needs_review</option>
-            <option value="approved">approved</option>
-            <option value="rejected">rejected</option>
-          </select>
-        </label>
-        <label>Citation URL <input id="draftCitationURL" placeholder="https://zh.moegirl.org.cn/..."></label>
-        <label>Citation title <input id="draftCitationTitle" placeholder="来源页面标题"></label>
-        <label>Source name <input id="draftSourceName" placeholder="萌娘百科 / yi-flow"></label>
-        <label>License <input id="draftLicense" placeholder="CC BY-NC-SA 3.0 CN"></label>
-        <label>Source policy <input id="draftSourcePolicy" placeholder="summary/FAQ only; no full article mirror"></label>
-        <label>Revision ID <input id="draftSourceRevisionID" placeholder="123456"></label>
-        <label>Page ID <input id="draftSourcePageID" placeholder="331116"></label>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1>Knowledge Pack Admin</h1>
+        <p>面向人工维护知识包的 dashboard：创建 chunk、审核证据、预览检索、发布 latest 和回滚版本都在同一条流程里完成。</p>
       </div>
-    </details>
-    <button id="saveDraft" type="button">保存草稿</button>
-    <button id="loadDraft" class="secondary" type="button">读取草稿</button>
-    <button id="previewDraft" class="secondary" type="button">预览草稿 chunk</button>
-    <button id="createDraftChunk" type="button">创建 chunk</button>
-    <button id="updateDraftChunk" class="secondary" type="button">更新 chunk</button>
-    <button id="duplicateDraftChunk" class="secondary" type="button">复制 chunk</button>
-    <button id="deleteDraftChunk" class="secondary" type="button">删除 chunk</button>
-    <h3>Source import</h3>
-    <p class="muted">用于把外部页面整理成 FAQ draft；导入后仍进入同一个 Review、Quality Gates 和 Publish 流程。</p>
-    <h3>Moegirl FAQ import</h3>
-    <div class="grid">
-      <label>Moegirl draft version <input id="moegirlDraftVersion" placeholder="2026.06.26.moegirl-draft"></label>
-      <label>Moegirl import limit <input id="moegirlDraftLimit" type="number" min="1" max="3000" value="50"></label>
+      <div class="topbar-actions">
+        <button id="loginAdmin" type="button">使用 yi-flow 账号登录</button>
+        <button id="logoutAdmin" class="secondary" type="button">退出登录</button>
+      </div>
     </div>
-    <label>Moegirl titles <textarea id="moegirlDraftTitles" spellcheck="false" placeholder="初音未来&#10;东方Project"></textarea></label>
-    <button id="importMoegirlDraft" class="secondary" type="button">导入 Moegirl FAQ draft</button>
-    <button id="reviewMoegirlDraft" class="secondary" type="button">检查 Moegirl draft</button>
-    <div id="moegirlDraftImportReport" class="chunk-list"></div>
-    <div class="grid">
-      <label>Chunk search <input id="draftChunkSearch" placeholder="搜索 title/path/source/content/status"></label>
-      <label>Review filter
-        <select id="draftReviewFilter">
-          <option value="">全部</option>
-          <option value="draft">draft</option>
-          <option value="needs_review">needs_review</option>
-          <option value="approved">approved</option>
-          <option value="rejected">rejected</option>
-        </select>
-      </label>
-      <label>Page size <input id="draftChunkPageSize" type="number" min="25" max="500" value="100"></label>
+
+    <div class="status-strip" aria-label="Dashboard status">
+      <div class="status-tile"><span>Session</span><strong id="authStatus">正在检查登录状态。</strong></div>
+      <div class="status-tile"><span>Draft</span><strong id="draftStatus">Draft workspace status: not saved</strong></div>
+      <div class="status-tile"><span>最近导出版本</span><strong id="lastWeKnoraExportVersion">-</strong></div>
+      <div class="status-tile"><span>最近质量门禁</span><strong id="lastWeKnoraQualityGate">-</strong></div>
     </div>
-    <button id="searchDraftChunks" class="secondary" type="button">搜索 chunks</button>
-    <button id="auditDraftSources" class="secondary" type="button">审计 source metadata</button>
-    <div class="pager">
-      <button id="prevDraftChunkPage" class="secondary" type="button">上一页 chunks</button>
-      <button id="nextDraftChunkPage" class="secondary" type="button">下一页 chunks</button>
-      <span id="draftChunkPageStatus" class="muted">limit=100 · offset=0</span>
-    </div>
-    <p id="draftStatus" class="muted">Draft workspace status: not saved</p>
-    <div id="draftChunks" class="chunk-list"></div>
-    <div id="dashboard-review" class="dashboard-anchor" data-dashboard-category="review">
-      <p class="dashboard-category-label">Review</p>
-    </div>
-    <h3>Batch review</h3>
-    <label>Canonical draft JSON <textarea id="draftBulkJSON" spellcheck="false" placeholder='{"chunks":[],"prompts":[],"citations":{"citations":[]}}'></textarea></label>
-    <div class="grid">
-      <label>Review queue filter
-        <select id="draftReviewQueueFilter">
-          <option value="unreviewed">unreviewed</option>
-          <option value="missing_citation">missing_citation</option>
-          <option value="failed_gate">failed_gate</option>
-          <option value="changed_since_last_publish">changed_since_last_publish</option>
-          <option value="">all</option>
-        </select>
-      </label>
-    </div>
-    <button id="validateDraftBulkImport" class="secondary" type="button">验证批量导入</button>
-    <button id="importDraftBulkJSON" class="secondary" type="button">导入 draft JSON</button>
-    <button id="exportDraftBulkJSON" class="secondary" type="button">导出 draft JSON</button>
-    <button id="loadDraftReviewQueue" class="secondary" type="button">加载 review queue</button>
-    <button id="loadDraftReviewReport" class="secondary" type="button">生成 review report</button>
-    <div id="draftReviewMaterials" class="chunk-list"></div>
-    <h3>Prompts / golden questions</h3>
-    <div class="grid">
-      <label>Prompt ID <input id="draftPromptID" placeholder="prompt-alpha"></label>
-      <label>Prompt title <input id="draftPromptTitle" placeholder="Alpha golden"></label>
-      <label>Expected chunk IDs <input id="draftPromptExpectedChunkIDs" placeholder="alpha,beta"></label>
-      <label>Prompt tags <input id="draftPromptTags" placeholder="golden, smoke"></label>
-      <label>Answerability
-        <select id="draftPromptAnswerability">
-          <option value="answerable">answerable</option>
-          <option value="refusal">refusal</option>
-          <option value="ood">ood</option>
-        </select>
-      </label>
-    </div>
-    <label>Question <textarea id="draftPromptQuestion" spellcheck="false" placeholder="这里写 golden question / refusal / OOD 问题。"></textarea></label>
-    <button id="createDraftPrompt" type="button">创建 prompt</button>
-    <button id="updateDraftPrompt" class="secondary" type="button">更新 prompt</button>
-    <button id="deleteDraftPrompt" class="secondary" type="button">删除 prompt</button>
-    <button id="listDraftPrompts" class="secondary" type="button">列出 prompts</button>
-    <button id="previewDraftPrompt" class="secondary" type="button">运行 prompt 预览</button>
-    <div id="draftPrompts" class="chunk-list"></div>
-    <h3>Draft retrieval preview</h3>
-    <div class="grid">
-      <label>Draft retrieval question <input id="draftRetrievalQuery" placeholder="输入问题，发布前检索 draft chunks"></label>
-      <label>Draft TopK <input id="draftRetrievalTopK" type="number" min="1" max="12" value="5"></label>
-    </div>
-    <button id="runDraftRetrievalPreview" class="secondary" type="button">运行 draft retrieval preview</button>
-    <div id="draftRetrievalResults" class="chunk-list"></div>
-    <h3>Quality Gates</h3>
-    <button id="runDraftQualityGates" class="secondary" type="button">运行 quality gates</button>
-    <div id="draftQualityGateReport" class="chunk-list"></div>
-    <div id="dashboard-ship" class="dashboard-anchor" data-dashboard-category="ship">
-      <p class="dashboard-category-label">Ship</p>
-    </div>
-    <h3>Dry-run Build</h3>
-    <button id="runDraftBuildDryRun" class="secondary" type="button">运行 draft dry-run build</button>
-    <button id="publishDraftLatest" type="button">发布 draft 为 latest</button>
-    <div id="draftDryRunBuildReport" class="chunk-list"></div>
-    <p id="weknoraStatus" class="muted">Chunk Studio status: ready for draft editing, quality gates, dry-run and publish.</p>
-    <div class="grid">
-      <p class="muted">最近导出版本：<strong id="lastWeKnoraExportVersion">-</strong></p>
-      <p class="muted">最近质量门禁：<strong id="lastWeKnoraQualityGate">-</strong></p>
-    </div>
-  </section>
+
+    <section id="dashboard-config" data-dashboard-category="catalog">
+      <div class="section-head">
+        <div>
+          <h2>统一登录</h2>
+          <p class="muted">使用 yi-flow 账号登录后再创建、审核、发布或回滚知识包。登录由 auth-service 处理，本页面只保存服务端会话。</p>
+        </div>
+      </div>
+      <div class="grid">
+        <label>Knowledge base ID <input id="kbID" value="yi-flow-core"></label>
+      </div>
+    </section>
+
+    <section id="dashboard-create" data-dashboard-category="create">
+      <div class="section-head">
+        <div>
+          <h2>Chunk Studio</h2>
+          <p class="muted">自研 chunk 内容创建和管理后台。后续 draft、chunk 编辑、citation、prompts、retrieval preview、quality gates、dry-run、publish 和 rollback 都在这里完成；外部 RAG/知识库项目只作为交互参考，不作为 chunk authoring 后台。</p>
+        </div>
+      </div>
+      <div class="grid tight">
+        <div class="panel"><p class="panel-title">Draft workspace</p><p class="muted">保存未发布 chunks，先预览再发布。</p></div>
+        <div class="panel"><p class="panel-title">Chunk editor</p><p class="muted">维护 title、path、source、content 和 citation。</p></div>
+        <div class="panel"><p class="panel-title">Quality gates</p><p class="muted">检查缺字段、重复、污染和 citation 覆盖。</p></div>
+        <div class="panel"><p class="panel-title">Signed package</p><p class="muted">生成 manifest.json、knowledge-pack.zip、chunks.sqlite、citations.json 和 prompts.json。</p></div>
+      </div>
+
+      <div class="workbench-layout">
+        <div class="panel">
+          <h3>Create chunk</h3>
+          <p class="muted">Basic chunk fields：只填草稿版本、标题和正文即可；创建时会 auto-filled chunk_id/path/source。</p>
+          <div class="grid">
+            <label>Draft version <input id="draftVersion" placeholder="2026.06.26.draft"></label>
+            <label>Title <input id="draftChunkTitle" placeholder="知识点标题"></label>
+          </div>
+          <label>Content <textarea id="draftChunkContent" spellcheck="false" placeholder="这里写 chunk 内容。保存后会进入草稿预览，但不会修改 latest。"></textarea></label>
+          <details class="advanced-panel">
+            <summary>Advanced metadata</summary>
+            <p class="muted">留空时创建流程会自动生成 chunk_id、path 和 source；需要迁移旧 chunk 或保持外部引用时再手动填写。</p>
+            <div class="grid">
+              <label>Chunk ID <input id="draftChunkID" placeholder="draft-topic-001"></label>
+              <label>Path <input id="draftChunkPath" placeholder="topic/category/name"></label>
+              <label>Source <input id="draftChunkSource" placeholder="manual"></label>
+              <label>Tags <input id="draftChunkTags" placeholder="core, faq, agent"></label>
+              <label>Review status
+                <select id="draftChunkReviewStatus">
+                  <option value="draft">draft</option>
+                  <option value="needs_review">needs_review</option>
+                  <option value="approved">approved</option>
+                  <option value="rejected">rejected</option>
+                </select>
+              </label>
+              <label>Citation URL <input id="draftCitationURL" placeholder="https://zh.moegirl.org.cn/..."></label>
+              <label>Citation title <input id="draftCitationTitle" placeholder="来源页面标题"></label>
+              <label>Source name <input id="draftSourceName" placeholder="萌娘百科 / yi-flow"></label>
+              <label>License <input id="draftLicense" placeholder="CC BY-NC-SA 3.0 CN"></label>
+              <label>Source policy <input id="draftSourcePolicy" placeholder="summary/FAQ only; no full article mirror"></label>
+              <label>Revision ID <input id="draftSourceRevisionID" placeholder="123456"></label>
+              <label>Page ID <input id="draftSourcePageID" placeholder="331116"></label>
+            </div>
+          </details>
+          <div class="actions">
+            <button id="createDraftChunk" type="button">创建 chunk</button>
+            <button id="saveDraft" class="secondary" type="button">保存草稿</button>
+            <button id="loadDraft" class="secondary" type="button">读取草稿</button>
+            <button id="previewDraft" class="secondary" type="button">预览草稿 chunk</button>
+            <button id="updateDraftChunk" class="secondary" type="button">更新 chunk</button>
+            <button id="duplicateDraftChunk" class="secondary" type="button">复制 chunk</button>
+            <button id="deleteDraftChunk" class="secondary" type="button">删除 chunk</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>Draft list</h3>
+          <div class="grid">
+            <label>Chunk search <input id="draftChunkSearch" placeholder="搜索 title/path/source/content/status"></label>
+            <label>Review filter
+              <select id="draftReviewFilter">
+                <option value="">全部</option>
+                <option value="draft">draft</option>
+                <option value="needs_review">needs_review</option>
+                <option value="approved">approved</option>
+                <option value="rejected">rejected</option>
+              </select>
+            </label>
+            <label>Page size <input id="draftChunkPageSize" type="number" min="25" max="500" value="100"></label>
+          </div>
+          <div class="actions">
+            <button id="searchDraftChunks" class="secondary" type="button">搜索 chunks</button>
+            <button id="auditDraftSources" class="secondary" type="button">审计 source metadata</button>
+          </div>
+          <div class="pager">
+            <button id="prevDraftChunkPage" class="secondary" type="button">上一页 chunks</button>
+            <button id="nextDraftChunkPage" class="secondary" type="button">下一页 chunks</button>
+            <span id="draftChunkPageStatus" class="muted">limit=100 · offset=0</span>
+          </div>
+          <div id="draftChunks" class="chunk-list"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Source import</h3>
+        <p class="muted">用于把外部页面整理成 FAQ draft；导入后仍进入同一个 Review、Quality Gates 和 Publish 流程。</p>
+        <h3>Moegirl FAQ import</h3>
+        <div class="grid">
+          <label>Moegirl draft version <input id="moegirlDraftVersion" placeholder="2026.06.26.moegirl-draft"></label>
+          <label>Moegirl import limit <input id="moegirlDraftLimit" type="number" min="1" max="3000" value="50"></label>
+        </div>
+        <label>Moegirl titles <textarea id="moegirlDraftTitles" spellcheck="false" placeholder="初音未来&#10;东方Project"></textarea></label>
+        <div class="actions">
+          <button id="importMoegirlDraft" class="secondary" type="button">导入 Moegirl FAQ draft</button>
+          <button id="reviewMoegirlDraft" class="secondary" type="button">检查 Moegirl draft</button>
+        </div>
+        <div id="moegirlDraftImportReport" class="chunk-list"></div>
+      </div>
+
+      <div id="dashboard-review" class="dashboard-anchor" data-dashboard-category="review">
+        <p class="dashboard-category-label">Review</p>
+      </div>
+      <div class="workbench-layout">
+        <div class="panel">
+          <h3>Batch review</h3>
+          <label>Canonical draft JSON <textarea id="draftBulkJSON" spellcheck="false" placeholder='{"chunks":[],"prompts":[],"citations":{"citations":[]}}'></textarea></label>
+          <div class="grid">
+            <label>Review queue filter
+              <select id="draftReviewQueueFilter">
+                <option value="unreviewed">unreviewed</option>
+                <option value="missing_citation">missing_citation</option>
+                <option value="failed_gate">failed_gate</option>
+                <option value="changed_since_last_publish">changed_since_last_publish</option>
+                <option value="">all</option>
+              </select>
+            </label>
+          </div>
+          <div class="actions">
+            <button id="validateDraftBulkImport" class="secondary" type="button">验证批量导入</button>
+            <button id="importDraftBulkJSON" class="secondary" type="button">导入 draft JSON</button>
+            <button id="exportDraftBulkJSON" class="secondary" type="button">导出 draft JSON</button>
+            <button id="loadDraftReviewQueue" class="secondary" type="button">加载 review queue</button>
+            <button id="loadDraftReviewReport" class="secondary" type="button">生成 review report</button>
+          </div>
+          <div id="draftReviewMaterials" class="chunk-list"></div>
+        </div>
+
+        <div class="panel">
+          <h3>Prompts / golden questions</h3>
+          <div class="grid">
+            <label>Prompt ID <input id="draftPromptID" placeholder="prompt-alpha"></label>
+            <label>Prompt title <input id="draftPromptTitle" placeholder="Alpha golden"></label>
+            <label>Expected chunk IDs <input id="draftPromptExpectedChunkIDs" placeholder="alpha,beta"></label>
+            <label>Prompt tags <input id="draftPromptTags" placeholder="golden, smoke"></label>
+            <label>Answerability
+              <select id="draftPromptAnswerability">
+                <option value="answerable">answerable</option>
+                <option value="refusal">refusal</option>
+                <option value="ood">ood</option>
+              </select>
+            </label>
+          </div>
+          <label>Question <textarea id="draftPromptQuestion" spellcheck="false" placeholder="这里写 golden question / refusal / OOD 问题。"></textarea></label>
+          <div class="actions">
+            <button id="createDraftPrompt" type="button">创建 prompt</button>
+            <button id="updateDraftPrompt" class="secondary" type="button">更新 prompt</button>
+            <button id="deleteDraftPrompt" class="secondary" type="button">删除 prompt</button>
+            <button id="listDraftPrompts" class="secondary" type="button">列出 prompts</button>
+            <button id="previewDraftPrompt" class="secondary" type="button">运行 prompt 预览</button>
+          </div>
+          <div id="draftPrompts" class="chunk-list"></div>
+        </div>
+      </div>
+
+      <div class="workbench-layout">
+        <div class="panel">
+          <h3>Draft retrieval preview</h3>
+          <div class="grid">
+            <label>Draft retrieval question <input id="draftRetrievalQuery" placeholder="输入问题，发布前检索 draft chunks"></label>
+            <label>Draft TopK <input id="draftRetrievalTopK" type="number" min="1" max="12" value="5"></label>
+          </div>
+          <div class="actions">
+            <button id="runDraftRetrievalPreview" class="secondary" type="button">运行 draft retrieval preview</button>
+          </div>
+          <div id="draftRetrievalResults" class="chunk-list"></div>
+        </div>
+
+        <div class="panel">
+          <h3>Quality Gates</h3>
+          <p class="dashboard-note">发布前先跑 quality gates，再跑 dry-run build。失败时不要绕过，先修 chunk、citation 或 prompt。</p>
+          <div class="actions">
+            <button id="runDraftQualityGates" class="secondary" type="button">运行 quality gates</button>
+          </div>
+          <div id="draftQualityGateReport" class="chunk-list"></div>
+        </div>
+      </div>
+
+      <div id="dashboard-ship" class="dashboard-anchor" data-dashboard-category="ship">
+        <p class="dashboard-category-label">Ship</p>
+      </div>
+      <div class="panel">
+        <h3>Dry-run Build</h3>
+        <p class="muted">Dry-run 会构建草稿包并报告产物，正式发布会把 draft 写成 latest。</p>
+        <div class="actions">
+          <button id="runDraftBuildDryRun" class="secondary" type="button">运行 draft dry-run build</button>
+          <button id="publishDraftLatest" type="button">发布 draft 为 latest</button>
+        </div>
+        <div id="draftDryRunBuildReport" class="chunk-list"></div>
+        <p id="weknoraStatus" class="muted">Chunk Studio status: ready for draft editing, quality gates, dry-run and publish.</p>
+      </div>
+    </section>
 
   <div hidden>
     <input id="builderVersion">
@@ -742,43 +1051,62 @@ const adminPageHTML = `<!doctype html>
     <button id="buildMoegirl" type="button"></button>
   </div>
 
-  <section data-dashboard-category="ship">
-    <h2>手动上传版本</h2>
-    <p class="muted">保留旧路径：仅当你已经离线生成 manifest.json 和 knowledge-pack.zip 时使用。</p>
+    <section data-dashboard-category="ship">
+      <div class="section-head">
+        <div>
+          <h2>手动上传版本</h2>
+          <p class="muted">保留旧路径：仅当你已经离线生成 manifest.json 和 knowledge-pack.zip 时使用。</p>
+        </div>
+      </div>
     <label>Version <input id="version" placeholder="2026.06.20.001"></label>
     <label>manifest.json <input id="manifest" type="file" accept="application/json,.json"></label>
     <label>knowledge-pack.zip <input id="package" type="file" accept=".zip,application/zip"></label>
-    <button id="publish">发布并设为 latest</button>
-  </section>
+      <div class="actions"><button id="publish">发布并设为 latest</button></div>
+    </section>
 
-  <section id="dashboard-operate" data-dashboard-category="operate">
-    <h2>版本</h2>
-    <button id="refresh" class="secondary">刷新版本列表</button>
+    <section id="dashboard-operate" data-dashboard-category="operate">
+      <div class="section-head">
+        <div>
+          <h2>版本</h2>
+          <p class="muted">查看 published versions、latest 指针和回滚目标。</p>
+        </div>
+        <button id="refresh" class="secondary">刷新版本列表</button>
+      </div>
     <pre id="versions"></pre>
-  </section>
+    </section>
 
-  <section id="dashboard-inspect" data-dashboard-category="inspect">
-    <h2>内容预览</h2>
-    <p class="muted">查看已发布 Knowledge Pack 里的 chunks，并复制样例问题到 App 中验证检索和引用。</p>
+    <section id="dashboard-inspect" data-dashboard-category="inspect">
+      <div class="section-head">
+        <div>
+          <h2>内容预览</h2>
+          <p class="muted">查看已发布 Knowledge Pack 里的 chunks，并复制样例问题到 App 中验证检索和引用。</p>
+        </div>
+      </div>
     <div class="grid">
       <label>Preview version <input id="previewVersion" placeholder="留空表示 latest"></label>
       <label>Chunk limit <input id="previewLimit" type="number" min="1" max="50" value="12"></label>
     </div>
-    <button id="preview" class="secondary">查看知识包内容</button>
+      <div class="actions"><button id="preview" class="secondary">查看知识包内容</button></div>
     <p id="previewSummary" class="muted"></p>
     <div id="previewChunks" class="chunk-list"></div>
     <pre id="previewRaw"></pre>
-  </section>
+    </section>
 
-  <section>
-    <h2>RAG 对比</h2>
-    <p class="muted">输入问题后同时查看本地 Knowledge Pack FTS5 和远程 WeKnora 网关结果。远程未配置时只显示状态，不阻断本地检索。</p>
+    <section>
+      <div class="section-head">
+        <div>
+          <h2>RAG 对比</h2>
+          <p class="muted">输入问题后同时查看本地 Knowledge Pack FTS5 和远程 WeKnora 网关结果。远程未配置时只显示状态，不阻断本地检索。</p>
+        </div>
+      </div>
     <div class="grid">
       <label>Query <input id="ragQuery" placeholder="知识包更新路径是什么？"></label>
       <label>TopK <input id="ragTopK" type="number" min="1" max="12" value="5"></label>
     </div>
-    <button id="runRagCompare" class="secondary">运行 RAG 对比</button>
-    <button id="copyRagQuestion" class="copy">复制问题到 App</button>
+      <div class="actions">
+        <button id="runRagCompare" class="secondary">运行 RAG 对比</button>
+        <button id="copyRagQuestion" class="copy">复制问题到 App</button>
+      </div>
     <div class="compare-grid">
       <div class="compare-column">
         <h3>Local FTS5</h3>
@@ -792,19 +1120,30 @@ const adminPageHTML = `<!doctype html>
       </div>
     </div>
     <pre id="ragCompareRaw"></pre>
-  </section>
+    </section>
 
-  <section>
-    <h2>回滚 latest</h2>
+    <section>
+      <div class="section-head">
+        <div>
+          <h2>回滚 latest</h2>
+          <p class="muted">把 latest 指针切回某个已发布版本，不重新构建包。</p>
+        </div>
+      </div>
     <label>Version <input id="rollbackVersion" placeholder="2026.06.20.001"></label>
-    <button id="rollback">设为 latest</button>
-  </section>
+      <div class="actions"><button id="rollback">设为 latest</button></div>
+    </section>
 
-  <section>
-    <h2>输出</h2>
+    <section>
+      <div class="section-head">
+        <div>
+          <h2>输出</h2>
+          <p class="muted">所有管理操作的 HTTP 状态和响应体。</p>
+        </div>
+      </div>
     <pre id="output"></pre>
-  </section>
-</main>
+    </section>
+  </main>
+</div>
 <script>
 const kbIDInput = document.querySelector("#kbID");
 const output = document.querySelector("#output");
