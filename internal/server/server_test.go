@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1166,6 +1167,246 @@ func TestAdminDraftSaveLocalLatencySmoke(t *testing.T) {
 	}
 }
 
+func TestAdminDraftChunkCRUDRoundTripsThroughPublicAPIs(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.crud", `{
+	  "chunks": [
+	    {
+	      "chunk_id": "alpha",
+	      "title": "Alpha chunk",
+	      "path": "draft/crud/alpha",
+	      "source": "manual",
+	      "content": "Alpha content for draft CRUD.",
+	      "tags": ["core"],
+	      "review_status": "draft"
+	    }
+	  ],
+	  "prompts": [],
+	  "citations": {"citations":[]}
+	}`)
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	create := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.crud/chunks", bytes.NewBufferString(`{
+	  "chunk_id": "beta",
+	  "title": "Beta agent chunk",
+	  "path": "draft/crud/beta",
+	  "source": "manual",
+	  "content": "Beta content mentions agent routing and chunk editing.",
+	  "tags": ["agent", "core"],
+	  "review_status": "needs_review"
+	}`))
+	create.Header.Set("Authorization", "Bearer test-admin-token")
+	create.Header.Set("Content-Type", "application/json")
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("create chunk status=%d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+
+	search := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.crud/chunks?q=agent&review_status=needs_review", nil)
+	search.Header.Set("Authorization", "Bearer test-admin-token")
+	searchResponse := httptest.NewRecorder()
+	handler.ServeHTTP(searchResponse, search)
+	if searchResponse.Code != http.StatusOK {
+		t.Fatalf("search chunks status=%d body=%s", searchResponse.Code, searchResponse.Body.String())
+	}
+	var searchResult struct {
+		Total   int `json:"total"`
+		Matched int `json:"matched"`
+		Chunks  []struct {
+			ChunkID      string   `json:"chunk_id"`
+			Title        string   `json:"title"`
+			Tags         []string `json:"tags"`
+			ReviewStatus string   `json:"review_status"`
+		} `json:"chunks"`
+	}
+	if err := json.Unmarshal(searchResponse.Body.Bytes(), &searchResult); err != nil {
+		t.Fatalf("decode search chunks: %v", err)
+	}
+	if searchResult.Total != 2 || searchResult.Matched != 1 || len(searchResult.Chunks) != 1 {
+		t.Fatalf("search result = %+v body=%s", searchResult, searchResponse.Body.String())
+	}
+	if searchResult.Chunks[0].ChunkID != "beta" || searchResult.Chunks[0].ReviewStatus != "needs_review" || strings.Join(searchResult.Chunks[0].Tags, ",") != "agent,core" {
+		t.Fatalf("search chunk = %+v", searchResult.Chunks[0])
+	}
+
+	update := httptest.NewRequest("PUT", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.crud/chunks/beta", bytes.NewBufferString(`{
+	  "chunk_id": "beta",
+	  "title": "Beta approved chunk",
+	  "path": "draft/crud/beta-approved",
+	  "source": "manual",
+	  "content": "Updated beta content after review.",
+	  "tags": ["approved", "agent"],
+	  "review_status": "approved"
+	}`))
+	update.Header.Set("Authorization", "Bearer test-admin-token")
+	update.Header.Set("Content-Type", "application/json")
+	updateResponse := httptest.NewRecorder()
+	handler.ServeHTTP(updateResponse, update)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update chunk status=%d body=%s", updateResponse.Code, updateResponse.Body.String())
+	}
+
+	duplicate := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.crud/chunks/beta/duplicate", bytes.NewBufferString(`{"chunk_id":"beta-copy"}`))
+	duplicate.Header.Set("Authorization", "Bearer test-admin-token")
+	duplicate.Header.Set("Content-Type", "application/json")
+	duplicateResponse := httptest.NewRecorder()
+	handler.ServeHTTP(duplicateResponse, duplicate)
+	if duplicateResponse.Code != http.StatusCreated {
+		t.Fatalf("duplicate chunk status=%d body=%s", duplicateResponse.Code, duplicateResponse.Body.String())
+	}
+
+	deleteAlpha := httptest.NewRequest("DELETE", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.crud/chunks/alpha", nil)
+	deleteAlpha.Header.Set("Authorization", "Bearer test-admin-token")
+	deleteResponse := httptest.NewRecorder()
+	handler.ServeHTTP(deleteResponse, deleteAlpha)
+	if deleteResponse.Code != http.StatusOK {
+		t.Fatalf("delete chunk status=%d body=%s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+
+	readDraft := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.crud", nil)
+	readDraft.Header.Set("Authorization", "Bearer test-admin-token")
+	readResponse := httptest.NewRecorder()
+	handler.ServeHTTP(readResponse, readDraft)
+	if readResponse.Code != http.StatusOK {
+		t.Fatalf("read draft status=%d body=%s", readResponse.Code, readResponse.Body.String())
+	}
+	var draft struct {
+		Chunks []struct {
+			ChunkID      string   `json:"chunk_id"`
+			Title        string   `json:"title"`
+			Tags         []string `json:"tags"`
+			ReviewStatus string   `json:"review_status"`
+		} `json:"chunks"`
+	}
+	if err := json.Unmarshal(readResponse.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("decode draft: %v", err)
+	}
+	if len(draft.Chunks) != 2 {
+		t.Fatalf("draft chunks=%+v body=%s", draft.Chunks, readResponse.Body.String())
+	}
+	ids := []string{draft.Chunks[0].ChunkID, draft.Chunks[1].ChunkID}
+	sort.Strings(ids)
+	if strings.Join(ids, ",") != "beta,beta-copy" {
+		t.Fatalf("draft ids=%v chunks=%+v", ids, draft.Chunks)
+	}
+
+	duplicateID := httptest.NewRequest("POST", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.crud/chunks", bytes.NewBufferString(`{
+	  "chunk_id": "beta",
+	  "title": "Duplicate beta",
+	  "path": "draft/crud/duplicate",
+	  "source": "manual",
+	  "content": "Duplicate beta should be rejected."
+	}`))
+	duplicateID.Header.Set("Authorization", "Bearer test-admin-token")
+	duplicateID.Header.Set("Content-Type", "application/json")
+	duplicateIDResponse := httptest.NewRecorder()
+	handler.ServeHTTP(duplicateIDResponse, duplicateID)
+	if duplicateIDResponse.Code != http.StatusConflict {
+		t.Fatalf("duplicate chunk id status=%d body=%s", duplicateIDResponse.Code, duplicateIDResponse.Body.String())
+	}
+	if !strings.Contains(duplicateIDResponse.Body.String(), "duplicate chunk_id") {
+		t.Fatalf("duplicate error should mention chunk_id: %s", duplicateIDResponse.Body.String())
+	}
+
+	invalidUpdate := httptest.NewRequest("PUT", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.crud/chunks/beta", bytes.NewBufferString(`{
+	  "chunk_id": "beta",
+	  "title": "",
+	  "path": "draft/crud/beta",
+	  "source": "manual",
+	  "content": "content"
+	}`))
+	invalidUpdate.Header.Set("Authorization", "Bearer test-admin-token")
+	invalidUpdate.Header.Set("Content-Type", "application/json")
+	invalidUpdateResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidUpdateResponse, invalidUpdate)
+	if invalidUpdateResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid update status=%d body=%s", invalidUpdateResponse.Code, invalidUpdateResponse.Body.String())
+	}
+	if !strings.Contains(invalidUpdateResponse.Body.String(), "title") {
+		t.Fatalf("invalid update should mention title: %s", invalidUpdateResponse.Body.String())
+	}
+}
+
+func TestAdminDraftChunkSearchLocalLatencySmoke(t *testing.T) {
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	chunks := make([]map[string]any, 0, 1000)
+	for index := 0; index < 1000; index++ {
+		id := "chunk-" + strconv.Itoa(index)
+		reviewStatus := "draft"
+		content := "General chunk content " + strconv.Itoa(index)
+		if index%10 == 0 {
+			reviewStatus = "approved"
+			content = "Needle topic content for search latency " + strconv.Itoa(index)
+		}
+		chunks = append(chunks, map[string]any{
+			"chunk_id":      id,
+			"title":         "Chunk " + strconv.Itoa(index),
+			"path":          "draft/search/" + strconv.Itoa(index),
+			"source":        "manual",
+			"content":       content,
+			"tags":          []string{"latency", reviewStatus},
+			"review_status": reviewStatus,
+		})
+	}
+	body, err := json.Marshal(map[string]any{
+		"chunks":    chunks,
+		"prompts":   []any{},
+		"citations": map[string]any{"citations": []any{}},
+	})
+	if err != nil {
+		t.Fatalf("encode draft: %v", err)
+	}
+	saveResponse := saveDraftJSON(t, handler, "yi-flow-core", "2026.06.26.search", string(body))
+	if saveResponse.Code != http.StatusCreated {
+		t.Fatalf("save search draft status=%d body=%s", saveResponse.Code, saveResponse.Body.String())
+	}
+
+	durations := make([]time.Duration, 0, 25)
+	for index := 0; index < 25; index++ {
+		request := httptest.NewRequest("GET", "/admin/api/kb/yi-flow-core/drafts/2026.06.26.search/chunks?q=needle&review_status=approved", nil)
+		request.Header.Set("Authorization", "Bearer test-admin-token")
+		response := httptest.NewRecorder()
+		start := time.Now()
+		handler.ServeHTTP(response, request)
+		durations = append(durations, time.Since(start))
+		if response.Code != http.StatusOK {
+			t.Fatalf("search status=%d body=%s", response.Code, response.Body.String())
+		}
+		var decoded struct {
+			Matched int `json:"matched"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+			t.Fatalf("decode search response: %v", err)
+		}
+		if decoded.Matched != 100 {
+			t.Fatalf("matched=%d want 100 body=%s", decoded.Matched, response.Body.String())
+		}
+	}
+
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	p95Index := (len(durations)*95+99)/100 - 1
+	if p95 := durations[p95Index]; p95 > 800*time.Millisecond {
+		t.Fatalf("draft chunk search p95=%s want <=800ms all=%v", p95, durations)
+	}
+}
+
 func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
@@ -1197,6 +1438,20 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("/drafts/")) {
 		t.Fatalf("admin page missing draft api usage")
+	}
+	for _, expected := range []string{
+		"Chunk search",
+		"Review status",
+		"Review filter",
+		"创建 chunk",
+		"更新 chunk",
+		"复制 chunk",
+		"删除 chunk",
+		"unsaved changes",
+	} {
+		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
+			t.Fatalf("admin page missing chunk editor control %q", expected)
+		}
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("/admin/api/kb/")) {
 		t.Fatalf("admin page missing admin api usage")
@@ -1305,6 +1560,17 @@ func publishVersion(
 	publishResponse := httptest.NewRecorder()
 	handler.ServeHTTP(publishResponse, publish)
 	return publishResponse
+}
+
+func saveDraftJSON(t *testing.T, handler http.Handler, kbID string, version string, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	request := httptest.NewRequest("PUT", "/admin/api/kb/"+kbID+"/drafts/"+version, bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
 }
 
 func multipartRequest(

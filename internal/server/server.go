@@ -69,6 +69,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleRAGQuery(w, r)
 	case r.Method == http.MethodGet && (r.URL.Path == "/admin" || r.URL.Path == "/admin/"):
 		h.handleAdminPage(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/chunks"):
+		h.handleListDraftChunks(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/chunks"):
+		h.handleCreateDraftChunk(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.Contains(r.URL.Path, "/chunks/") && strings.HasSuffix(r.URL.Path, "/duplicate"):
+		h.handleDuplicateDraftChunk(w, r)
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.Contains(r.URL.Path, "/chunks/"):
+		h.handleUpdateDraftChunk(w, r)
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.Contains(r.URL.Path, "/chunks/"):
+		h.handleDeleteDraftChunk(w, r)
 	case (r.Method == http.MethodPut || r.Method == http.MethodPost) && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/"):
 		h.handleSaveDraft(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/admin/api/kb/") && strings.Contains(r.URL.Path, "/drafts/") && strings.HasSuffix(r.URL.Path, "/preview"):
@@ -210,8 +220,8 @@ const adminPageHTML = `<!doctype html>
     h1 { font-size: 32px; margin: 0 0 8px; }
     section { background: #fffef7; border: 1px solid #d9dfd2; border-radius: 8px; padding: 18px; margin-top: 18px; }
     label { display: grid; gap: 6px; margin: 12px 0; font-weight: 650; }
-    input, button, textarea { font: inherit; }
-    input, textarea { padding: 10px; border: 1px solid #b9c2b2; border-radius: 6px; background: white; }
+    input, button, textarea, select { font: inherit; }
+    input, textarea, select { padding: 10px; border: 1px solid #b9c2b2; border-radius: 6px; background: white; }
     textarea { min-height: 140px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.45; }
     button { border: 0; border-radius: 6px; background: #0f766e; color: white; padding: 10px 14px; cursor: pointer; }
     button.secondary { background: #334155; }
@@ -259,12 +269,39 @@ const adminPageHTML = `<!doctype html>
       <label>Title <input id="draftChunkTitle" placeholder="知识点标题"></label>
       <label>Path <input id="draftChunkPath" placeholder="topic/category/name"></label>
       <label>Source <input id="draftChunkSource" value="manual"></label>
+      <label>Tags <input id="draftChunkTags" placeholder="core, faq, agent"></label>
+      <label>Review status
+        <select id="draftChunkReviewStatus">
+          <option value="draft">draft</option>
+          <option value="needs_review">needs_review</option>
+          <option value="approved">approved</option>
+          <option value="rejected">rejected</option>
+        </select>
+      </label>
     </div>
     <label>Content <textarea id="draftChunkContent" spellcheck="false" placeholder="这里写 chunk 内容。保存后会进入草稿预览，但不会修改 latest。"></textarea></label>
     <button id="saveDraft" type="button">保存草稿</button>
     <button id="loadDraft" class="secondary" type="button">读取草稿</button>
     <button id="previewDraft" class="secondary" type="button">预览草稿 chunk</button>
+    <button id="createDraftChunk" type="button">创建 chunk</button>
+    <button id="updateDraftChunk" class="secondary" type="button">更新 chunk</button>
+    <button id="duplicateDraftChunk" class="secondary" type="button">复制 chunk</button>
+    <button id="deleteDraftChunk" class="secondary" type="button">删除 chunk</button>
+    <div class="grid">
+      <label>Chunk search <input id="draftChunkSearch" placeholder="搜索 title/path/source/content/status"></label>
+      <label>Review filter
+        <select id="draftReviewFilter">
+          <option value="">全部</option>
+          <option value="draft">draft</option>
+          <option value="needs_review">needs_review</option>
+          <option value="approved">approved</option>
+          <option value="rejected">rejected</option>
+        </select>
+      </label>
+    </div>
+    <button id="searchDraftChunks" class="secondary" type="button">搜索 chunks</button>
     <p id="draftStatus" class="muted">Draft workspace status: not saved</p>
+    <div id="draftChunks" class="chunk-list"></div>
     <p id="weknoraStatus" class="muted">Chunk Studio status: direction locked; draft editor is tracked in #42/#43.</p>
     <div class="grid">
       <p class="muted">最近导出版本：<strong id="lastWeKnoraExportVersion">-</strong></p>
@@ -375,9 +412,12 @@ const weknoraStatus = document.querySelector("#weknoraStatus");
 const lastWeKnoraExportVersion = document.querySelector("#lastWeKnoraExportVersion");
 const lastWeKnoraQualityGate = document.querySelector("#lastWeKnoraQualityGate");
 const draftStatus = document.querySelector("#draftStatus");
+const draftChunksList = document.querySelector("#draftChunks");
 const servicePrefix = location.pathname.includes("/admin") ? location.pathname.split("/admin")[0] : "";
 let lastPreview = null;
 let lastWeKnoraDryRun = null;
+let selectedDraftChunkID = "";
+let draftDirty = false;
 tokenInput.value = localStorage.getItem("yiFlowKnowledgeAdminToken") || "";
 const defaultChunks = [
   {
@@ -432,6 +472,10 @@ document.querySelector("#saveToken").onclick = () => {
   localStorage.setItem("yiFlowKnowledgeAdminToken", tokenInput.value);
   output.textContent = "token saved locally";
 };
+for (const selector of ["#draftChunkID", "#draftChunkTitle", "#draftChunkPath", "#draftChunkSource", "#draftChunkTags", "#draftChunkReviewStatus", "#draftChunkContent"]) {
+  document.querySelector(selector).addEventListener("input", markDraftDirty);
+  document.querySelector(selector).addEventListener("change", markDraftDirty);
+}
 function token() { return tokenInput.value || localStorage.getItem("yiFlowKnowledgeAdminToken") || ""; }
 function kbID() { return kbIDInput.value.trim() || "yi-flow-core"; }
 function moegirlKBID() {
@@ -493,6 +537,12 @@ function fillDraftTemplate(force) {
   if (force || !document.querySelector("#draftChunkSource").value.trim()) {
     document.querySelector("#draftChunkSource").value = chunk.source;
   }
+  if (force || !document.querySelector("#draftChunkTags").value.trim()) {
+    document.querySelector("#draftChunkTags").value = (chunk.tags || []).join(", ");
+  }
+  if (force || !document.querySelector("#draftChunkReviewStatus").value.trim()) {
+    document.querySelector("#draftChunkReviewStatus").value = chunk.review_status || "draft";
+  }
   if (force || !document.querySelector("#draftChunkContent").value.trim()) {
     document.querySelector("#draftChunkContent").value = chunk.content;
   }
@@ -500,27 +550,46 @@ function fillDraftTemplate(force) {
 function draftVersion() {
   return document.querySelector("#draftVersion").value.trim() || todayVersion() + "-draft";
 }
+function draftChunkPayloadFromForm() {
+  return {
+    chunk_id: document.querySelector("#draftChunkID").value.trim(),
+    title: document.querySelector("#draftChunkTitle").value.trim(),
+    path: document.querySelector("#draftChunkPath").value.trim(),
+    source: document.querySelector("#draftChunkSource").value.trim(),
+    content: document.querySelector("#draftChunkContent").value.trim(),
+    tags: document.querySelector("#draftChunkTags").value.split(",").map((item) => item.trim()).filter(Boolean),
+    review_status: document.querySelector("#draftChunkReviewStatus").value.trim() || "draft"
+  };
+}
 function draftPayloadFromForm() {
   return {
-    chunks: [
-      {
-        chunk_id: document.querySelector("#draftChunkID").value.trim(),
-        title: document.querySelector("#draftChunkTitle").value.trim(),
-        path: document.querySelector("#draftChunkPath").value.trim(),
-        source: document.querySelector("#draftChunkSource").value.trim(),
-        content: document.querySelector("#draftChunkContent").value.trim()
-      }
-    ],
+    chunks: [draftChunkPayloadFromForm()],
     prompts: [],
     citations: defaultCitations
   };
 }
 function fillDraftFromChunk(chunk) {
+  selectedDraftChunkID = chunk.chunk_id || "";
   document.querySelector("#draftChunkID").value = chunk.chunk_id || "";
   document.querySelector("#draftChunkTitle").value = chunk.title || "";
   document.querySelector("#draftChunkPath").value = chunk.path || "";
   document.querySelector("#draftChunkSource").value = chunk.source || "";
+  document.querySelector("#draftChunkTags").value = (chunk.tags || []).join(", ");
+  document.querySelector("#draftChunkReviewStatus").value = chunk.review_status || "draft";
   document.querySelector("#draftChunkContent").value = chunk.content || "";
+  setDraftClean("Draft workspace status: selected · " + selectedDraftChunkID);
+}
+function markDraftDirty() {
+  draftDirty = true;
+  draftStatus.textContent = "Draft workspace status: unsaved changes";
+}
+function setDraftClean(message) {
+  draftDirty = false;
+  draftStatus.textContent = message;
+}
+function confirmDiscardDraftChanges() {
+  if (!draftDirty) return true;
+  return window.confirm("当前 chunk 有未保存修改，继续会丢失这些修改。");
 }
 async function showResponse(response) {
   const text = await response.text();
@@ -549,10 +618,11 @@ document.querySelector("#saveDraft").onclick = async () => {
   try {
     const version = draftVersion();
     document.querySelector("#draftVersion").value = version;
+    const payload = draftPayloadFromForm();
     const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(version), {
       method: "PUT",
       headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
-      body: JSON.stringify(draftPayloadFromForm())
+      body: JSON.stringify(payload)
     });
     const text = await showResponse(response);
     if (!response.ok) {
@@ -560,13 +630,16 @@ document.querySelector("#saveDraft").onclick = async () => {
       return;
     }
     const decoded = JSON.parse(text);
-    draftStatus.textContent = "Draft workspace status: saved · " + decoded.version + " · " + decoded.chunk_count + " chunks";
+    selectedDraftChunkID = payload.chunks[0].chunk_id;
+    setDraftClean("Draft workspace status: saved · " + decoded.version + " · " + decoded.chunk_count + " chunks");
+    await loadDraftChunkList();
   } catch (error) {
     draftStatus.textContent = "Draft workspace status: save failed";
     output.textContent = "保存草稿失败：\n" + String(error);
   }
 };
 document.querySelector("#loadDraft").onclick = async () => {
+  if (!confirmDiscardDraftChanges()) return;
   const version = draftVersion();
   const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(version), {
     headers: { Authorization: "Bearer " + token() }
@@ -579,7 +652,8 @@ document.querySelector("#loadDraft").onclick = async () => {
   const decoded = JSON.parse(text);
   document.querySelector("#draftVersion").value = decoded.version;
   if ((decoded.chunks || [])[0]) fillDraftFromChunk(decoded.chunks[0]);
-  draftStatus.textContent = "Draft workspace status: loaded · " + decoded.version + " · " + (decoded.chunks || []).length + " chunks";
+  renderDraftChunkList(decoded.chunks || [], (decoded.chunks || []).length, (decoded.chunks || []).length);
+  setDraftClean("Draft workspace status: loaded · " + decoded.version + " · " + (decoded.chunks || []).length + " chunks");
 };
 document.querySelector("#previewDraft").onclick = async () => {
   const version = draftVersion();
@@ -599,6 +673,98 @@ document.querySelector("#previewDraft").onclick = async () => {
   renderPreview(lastPreview);
   draftStatus.textContent = "Draft workspace status: preview loaded · " + version;
   output.textContent = "draft preview loaded: " + response.status;
+};
+document.querySelector("#createDraftChunk").onclick = async () => {
+  try {
+    const payload = draftChunkPayloadFromForm();
+    const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/chunks", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const text = await showResponse(response);
+    if (!response.ok) {
+      draftStatus.textContent = "Draft workspace status: create failed";
+      return;
+    }
+    selectedDraftChunkID = payload.chunk_id;
+    setDraftClean("Draft workspace status: created · " + selectedDraftChunkID);
+    await loadDraftChunkList();
+  } catch (error) {
+    draftStatus.textContent = "Draft workspace status: create failed";
+    output.textContent = "创建 chunk 失败：\n" + String(error);
+  }
+};
+document.querySelector("#updateDraftChunk").onclick = async () => {
+  try {
+    const originalID = selectedDraftChunkID || document.querySelector("#draftChunkID").value.trim();
+    if (!originalID) {
+      output.textContent = "请选择或输入要更新的 chunk_id。";
+      return;
+    }
+    const payload = draftChunkPayloadFromForm();
+    const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/chunks/" + encodeURIComponent(originalID), {
+      method: "PUT",
+      headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const text = await showResponse(response);
+    if (!response.ok) {
+      draftStatus.textContent = "Draft workspace status: update failed";
+      return;
+    }
+    selectedDraftChunkID = payload.chunk_id;
+    setDraftClean("Draft workspace status: updated · " + selectedDraftChunkID);
+    await loadDraftChunkList();
+  } catch (error) {
+    draftStatus.textContent = "Draft workspace status: update failed";
+    output.textContent = "更新 chunk 失败：\n" + String(error);
+  }
+};
+document.querySelector("#duplicateDraftChunk").onclick = async () => {
+  const originalID = selectedDraftChunkID || document.querySelector("#draftChunkID").value.trim();
+  if (!originalID) {
+    output.textContent = "请选择或输入要复制的 chunk_id。";
+    return;
+  }
+  const nextID = originalID + "-copy";
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/chunks/" + encodeURIComponent(originalID) + "/duplicate", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token(), "Content-Type": "application/json" },
+    body: JSON.stringify({ chunk_id: nextID })
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: duplicate failed";
+    return;
+  }
+  const decoded = JSON.parse(text);
+  if (decoded.chunk) fillDraftFromChunk(decoded.chunk);
+  setDraftClean("Draft workspace status: duplicated · " + (decoded.chunk || {}).chunk_id);
+  await loadDraftChunkList();
+};
+document.querySelector("#deleteDraftChunk").onclick = async () => {
+  const chunkID = selectedDraftChunkID || document.querySelector("#draftChunkID").value.trim();
+  if (!chunkID) {
+    output.textContent = "请选择或输入要删除的 chunk_id。";
+    return;
+  }
+  if (!window.confirm("删除 draft chunk：" + chunkID + "？")) return;
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/chunks/" + encodeURIComponent(chunkID), {
+    method: "DELETE",
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await showResponse(response);
+  if (!response.ok) {
+    draftStatus.textContent = "Draft workspace status: delete failed";
+    return;
+  }
+  selectedDraftChunkID = "";
+  setDraftClean("Draft workspace status: deleted · " + chunkID);
+  await loadDraftChunkList();
+};
+document.querySelector("#searchDraftChunks").onclick = async () => {
+  await loadDraftChunkList();
 };
 document.querySelector("#importPreviewToBuilder").onclick = () => {
   if (!lastPreview) {
@@ -805,6 +971,64 @@ document.querySelector("#rollback").onclick = async () => {
   });
   await showResponse(response);
 };
+async function loadDraftChunkList() {
+  const params = new URLSearchParams();
+  const query = document.querySelector("#draftChunkSearch").value.trim();
+  const reviewStatus = document.querySelector("#draftReviewFilter").value.trim();
+  if (query) params.set("q", query);
+  if (reviewStatus) params.set("review_status", reviewStatus);
+  const response = await fetch(servicePrefix + "/admin/api/kb/" + encodeURIComponent(kbID()) + "/drafts/" + encodeURIComponent(draftVersion()) + "/chunks" + (params.toString() ? "?" + params.toString() : ""), {
+    headers: { Authorization: "Bearer " + token() }
+  });
+  const text = await response.text();
+  output.textContent = response.status + "\n" + text;
+  if (!response.ok) {
+    draftChunksList.replaceChildren();
+    draftStatus.textContent = "Draft workspace status: list failed";
+    return;
+  }
+  const decoded = JSON.parse(text);
+  renderDraftChunkList(decoded.chunks || [], decoded.total || 0, decoded.matched || 0);
+  draftStatus.textContent = "Draft workspace status: listed · " + decoded.matched + "/" + decoded.total + " chunks";
+}
+function renderDraftChunkList(chunks, total, matched) {
+  draftChunksList.replaceChildren(...chunks.map(renderDraftListChunk));
+  if (chunks.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "No draft chunks · " + matched + "/" + total;
+    draftChunksList.append(empty);
+  }
+}
+function renderDraftListChunk(chunk) {
+  const card = document.createElement("article");
+  card.className = "chunk-card";
+
+  const title = document.createElement("h3");
+  title.textContent = chunk.title || chunk.chunk_id;
+  card.append(title);
+
+  const meta = document.createElement("div");
+  meta.className = "chunk-meta";
+  meta.textContent = [chunk.chunk_id, chunk.review_status || "draft", chunk.source, chunk.path, (chunk.tags || []).join(", ")].filter(Boolean).join(" · ");
+  card.append(meta);
+
+  const content = document.createElement("p");
+  content.className = "chunk-content";
+  content.textContent = chunk.content || "";
+  card.append(content);
+
+  const edit = document.createElement("button");
+  edit.className = "copy";
+  edit.type = "button";
+  edit.textContent = "编辑";
+  edit.onclick = () => {
+    if (!confirmDiscardDraftChanges()) return;
+    fillDraftFromChunk(chunk);
+  };
+  card.append(edit);
+  return card;
+}
 function renderPreview(preview) {
   previewSummary.textContent = preview.kb_id + " · " + preview.version + " · " + preview.chunks.length + " chunks";
   previewChunks.replaceChildren(...preview.chunks.map(renderChunk));

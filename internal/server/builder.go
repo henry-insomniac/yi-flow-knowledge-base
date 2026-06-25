@@ -36,11 +36,13 @@ type buildPublishRequest struct {
 }
 
 type knowledgePackBuildChunk struct {
-	ChunkID string `json:"chunk_id"`
-	Title   string `json:"title"`
-	Path    string `json:"path"`
-	Source  string `json:"source"`
-	Content string `json:"content"`
+	ChunkID      string   `json:"chunk_id"`
+	Title        string   `json:"title"`
+	Path         string   `json:"path"`
+	Source       string   `json:"source"`
+	Content      string   `json:"content"`
+	Tags         []string `json:"tags,omitempty"`
+	ReviewStatus string   `json:"review_status,omitempty"`
 }
 
 type knowledgePackBuildPrompt struct {
@@ -217,6 +219,11 @@ func normalizeBuildChunk(index int, chunk knowledgePackBuildChunk) (knowledgePac
 	chunk.Path = strings.TrimSpace(chunk.Path)
 	chunk.Source = strings.TrimSpace(chunk.Source)
 	chunk.Content = strings.TrimSpace(chunk.Content)
+	chunk.Tags = normalizeStringList(chunk.Tags)
+	chunk.ReviewStatus = strings.TrimSpace(chunk.ReviewStatus)
+	if chunk.ReviewStatus == "" {
+		chunk.ReviewStatus = draftStatus
+	}
 
 	if chunk.ChunkID == "" {
 		return chunk, fmt.Errorf("chunks[%d].chunk_id is required", index)
@@ -234,6 +241,20 @@ func normalizeBuildChunk(index int, chunk knowledgePackBuildChunk) (knowledgePac
 		return chunk, fmt.Errorf("chunks[%d].content is required", index)
 	}
 	return chunk, nil
+}
+
+func normalizeStringList(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		normalized = append(normalized, value)
+	}
+	return normalized
 }
 
 func writeChunksSQLite(path string, chunks []knowledgePackBuildChunk) error {
