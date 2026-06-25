@@ -247,36 +247,114 @@ const adminPageHTML = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Knowledge Pack Admin</title>
   <style>
-    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #f7f8f3; color: #14211d; }
-    main { max-width: 960px; margin: 0 auto; padding: 28px 18px 48px; }
-    h1 { font-size: 32px; margin: 0 0 8px; }
-    section { background: #fffef7; border: 1px solid #d9dfd2; border-radius: 8px; padding: 18px; margin-top: 18px; }
-    label { display: grid; gap: 6px; margin: 12px 0; font-weight: 650; }
-    input, button, textarea, select { font: inherit; }
-    input, textarea, select { padding: 10px; border: 1px solid #b9c2b2; border-radius: 6px; background: white; }
-    textarea { min-height: 140px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.45; }
-    button { border: 0; border-radius: 6px; background: #0f766e; color: white; padding: 10px 14px; cursor: pointer; }
-    button.secondary { background: #334155; }
-    button.copy { background: #ecfccb; color: #25330e; border: 1px solid #c7dca4; margin: 4px 6px 4px 0; }
-    pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; min-height: 80px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-    .muted { color: #647066; }
-    .chunk-list { display: grid; gap: 12px; margin-top: 14px; }
-    .chunk-card { border: 1px solid #d9dfd2; border-radius: 8px; padding: 14px; background: #fffffb; }
-    .chunk-card h3 { margin: 0 0 6px; font-size: 18px; }
-    .chunk-meta { color: #647066; font-size: 13px; margin-bottom: 8px; }
-    .chunk-content { line-height: 1.55; margin: 8px 0 10px; }
-    .question-row { display: flex; flex-wrap: wrap; gap: 4px; }
-    .compare-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 14px; }
-    .compare-column { border: 1px solid #d9dfd2; border-radius: 8px; padding: 12px; background: #fffffb; }
-    .compare-status { font-weight: 700; margin: 0 0 10px; }
-    .pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
-    .pager button { min-width: 96px; }
+    :root {
+      color-scheme: light;
+      --font-family: "Airbnb Cereal VF", Circular, -apple-system, BlinkMacSystemFont, system-ui, "Helvetica Neue", sans-serif;
+      --color-primary: #ff385c;
+      --color-primary-active: #e00b41;
+      --color-primary-disabled: #ffd1da;
+      --color-error: #c13515;
+      --color-ink: #222222;
+      --color-body: #3f3f3f;
+      --color-muted: #6a6a6a;
+      --color-muted-soft: #929292;
+      --color-hairline: #dddddd;
+      --color-hairline-soft: #ebebeb;
+      --color-border-strong: #c1c1c1;
+      --color-canvas: #ffffff;
+      --color-surface-soft: #f7f7f7;
+      --color-surface-strong: #f2f2f2;
+      --color-on-primary: #ffffff;
+      --radius-xs: 4px;
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+      --radius-xl: 32px;
+      --radius-full: 9999px;
+      --shadow-float: rgba(0, 0, 0, 0.02) 0 0 0 1px, rgba(0, 0, 0, 0.04) 0 2px 6px, rgba(0, 0, 0, 0.1) 0 4px 8px;
+      font-family: var(--font-family);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--color-canvas); color: var(--color-ink); font-family: var(--font-family); font-size: 16px; line-height: 1.5; }
+    main { max-width: 1280px; margin: 0 auto; padding: 32px 32px 64px; overflow-x: hidden; }
+    h1 { font-size: 28px; line-height: 1.43; font-weight: 700; letter-spacing: 0; margin: 0 0 4px; }
+    h2 { font-size: 22px; line-height: 1.18; font-weight: 600; letter-spacing: 0; margin: 0 0 16px; }
+    h3 { font-size: 20px; line-height: 1.2; font-weight: 600; letter-spacing: 0; margin: 32px 0 12px; }
+    main > p { margin: 0; color: var(--color-muted); font-size: 14px; }
+    section { min-width: 0; border-top: 1px solid var(--color-hairline-soft); padding: 32px 0; margin-top: 32px; overflow-x: hidden; overflow-wrap: anywhere; }
+    label { display: grid; gap: 8px; margin: 12px 0; color: var(--color-body); font-size: 14px; line-height: 1.29; font-weight: 500; letter-spacing: 0; }
+    input, button, textarea, select { font: inherit; letter-spacing: 0; }
+    input, textarea, select {
+      width: 100%;
+      min-height: 56px;
+      padding: 14px 12px;
+      border: 1px solid var(--color-hairline);
+      border-radius: var(--radius-sm);
+      background: var(--color-canvas);
+      color: var(--color-ink);
+      outline: none;
+    }
+    input:focus, textarea:focus, select:focus { border-color: var(--color-ink); box-shadow: inset 0 0 0 1px var(--color-ink); }
+    input::placeholder, textarea::placeholder { color: var(--color-muted-soft); }
+    textarea { min-height: 144px; resize: vertical; font-family: var(--font-family); font-size: 14px; line-height: 1.43; }
+    button {
+      min-height: 48px;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: var(--color-primary);
+      color: var(--color-on-primary);
+      padding: 14px 24px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 500;
+      line-height: 1.25;
+    }
+    button:hover { background: var(--color-primary-active); }
+    button:disabled { background: var(--color-primary-disabled); cursor: not-allowed; }
+    button.secondary { background: var(--color-canvas); color: var(--color-ink); border: 1px solid var(--color-ink); }
+    button.secondary:hover { background: var(--color-surface-soft); }
+    button.copy {
+      min-height: 40px;
+      border-radius: var(--radius-full);
+      background: var(--color-surface-strong);
+      color: var(--color-ink);
+      border: 1px solid transparent;
+      margin: 4px 8px 4px 0;
+      padding: 10px 20px;
+      font-size: 14px;
+    }
+    button.copy:hover { border-color: var(--color-hairline); background: var(--color-canvas); }
+    pre { white-space: pre-wrap; word-break: break-word; background: var(--color-surface-soft); color: var(--color-body); padding: 16px; border: 1px solid var(--color-hairline-soft); border-radius: var(--radius-md); min-height: 80px; font-size: 13px; line-height: 1.43; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; align-items: start; }
+    .grid > *, .compare-grid > *, .chunk-list > * { min-width: 0; }
+    .muted { color: var(--color-muted); }
+    .chunk-list { display: grid; gap: 16px; margin-top: 16px; }
+    .chunk-card { border: 1px solid var(--color-hairline); border-radius: var(--radius-md); padding: 16px; background: var(--color-canvas); }
+    .chunk-card:hover { box-shadow: var(--shadow-float); }
+    .chunk-card h3 { margin: 0 0 6px; font-size: 16px; line-height: 1.25; font-weight: 600; }
+    .chunk-meta { color: var(--color-muted); font-size: 13px; line-height: 1.23; margin-bottom: 8px; }
+    .chunk-content { color: var(--color-body); line-height: 1.5; margin: 8px 0 10px; }
+    .question-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .compare-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px; }
+    .compare-column { border: 1px solid var(--color-hairline); border-radius: var(--radius-md); padding: 16px; background: var(--color-canvas); }
+    .compare-status { font-weight: 600; margin: 0 0 10px; }
+    .pager {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 12px;
+      padding: 8px;
+      border: 1px solid var(--color-hairline);
+      border-radius: var(--radius-full);
+      background: var(--color-canvas);
+    }
+    .pager button { min-width: 112px; border-radius: var(--radius-full); }
+    #draftStatus, #draftChunkPageStatus { font-size: 14px; line-height: 1.29; }
     @media (max-width: 720px) {
-      main { padding: 18px 12px 36px; }
+      main { padding: 24px 16px 48px; }
       h1 { font-size: 26px; }
-      section { padding: 14px; }
+      section { padding: 24px 0; margin-top: 24px; }
       .grid, .compare-grid { grid-template-columns: 1fr; }
       button { width: 100%; }
       .pager button { width: auto; flex: 1 1 120px; }
@@ -422,7 +500,7 @@ const adminPageHTML = `<!doctype html>
     <button id="runDraftBuildDryRun" class="secondary" type="button">运行 draft dry-run build</button>
     <button id="publishDraftLatest" type="button">发布 draft 为 latest</button>
     <div id="draftDryRunBuildReport" class="chunk-list"></div>
-    <p id="weknoraStatus" class="muted">Chunk Studio status: direction locked; draft editor is tracked in #42/#43.</p>
+    <p id="weknoraStatus" class="muted">Chunk Studio status: ready for draft editing, quality gates, dry-run and publish.</p>
     <div class="grid">
       <p class="muted">最近导出版本：<strong id="lastWeKnoraExportVersion">-</strong></p>
       <p class="muted">最近质量门禁：<strong id="lastWeKnoraQualityGate">-</strong></p>

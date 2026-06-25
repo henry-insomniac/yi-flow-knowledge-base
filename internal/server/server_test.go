@@ -3165,6 +3165,49 @@ func TestAdminPageIsServedByTheKnowledgeBaseService(t *testing.T) {
 	}
 }
 
+func TestAdminPageFollowsProjectDesignSpec(t *testing.T) {
+	design, err := os.ReadFile("../../DESIGN.md")
+	if err != nil {
+		t.Fatalf("project DESIGN.md is required: %v", err)
+	}
+	for _, expected := range []string{
+		"name: Airbnb-design-analysis",
+		"primary: \"#ff385c\"",
+		"rounded.full",
+		"Airbnb Cereal VF",
+	} {
+		if !bytes.Contains(design, []byte(expected)) {
+			t.Fatalf("DESIGN.md missing %q", expected)
+		}
+	}
+
+	handler, err := server.NewHandler(server.Options{
+		StorageDir: t.TempDir(),
+		AdminToken: "test-admin-token",
+	})
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/admin/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("admin page status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{
+		"--color-primary: #ff385c",
+		"--color-canvas: #ffffff",
+		"--radius-full: 9999px",
+		"Airbnb Cereal VF",
+		"border-radius: var(--radius-full)",
+		"Chunk Studio",
+	} {
+		if !bytes.Contains(response.Body.Bytes(), []byte(expected)) {
+			t.Fatalf("admin page missing design token %q", expected)
+		}
+	}
+}
+
 func TestHealthzReportsOK(t *testing.T) {
 	handler, err := server.NewHandler(server.Options{
 		StorageDir: t.TempDir(),
